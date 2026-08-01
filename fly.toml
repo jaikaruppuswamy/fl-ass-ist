@@ -1,0 +1,38 @@
+# fly.toml — hand-maintained. Do NOT run `fly launch` against this directory.
+#
+# `fly launch` is a scaffolder for projects that have no config yet. Run on an
+# existing project it rewrites this file and invents a new random app name
+# (that is how `ff-assist-holy-stone-1713` appeared), which then breaks the
+# GitHub OAuth callback because the hostname changed.
+#
+# To create the app:   fly apps create ff-assist
+# To ship changes:     fly deploy
+# Both respect this file exactly.
+
+app = 'ff-assist'
+primary_region = 'ord'
+
+[build]
+
+[env]
+  FF_TRANSPORT = 'http'
+  FF_CACHE_DIR = '/data/cache'
+  FF_LOG_LEVEL = 'INFO'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Scale to zero keeps the bill near nothing. Suspend restores process memory,
+  # so the warm nflverse frames usually survive a wake-up.
+  auto_stop_machines = 'suspend'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'   # measured: ~126MB RSS with all frames resident
+
+# Persists the SQLite cache and the OAuth client registration across restarts.
+[[mounts]]
+  source = 'ff_data'
+  destination = '/data'

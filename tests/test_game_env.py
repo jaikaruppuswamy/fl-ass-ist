@@ -267,3 +267,31 @@ def test_game_environment_tool_stays_within_budget():
     late = tools.get_game_environment(17, settings=st)
     assert late["priced"].startswith("0/")
     assert all(g["implied_home"] is None for g in late["games"])
+
+
+@needs_net
+def test_game_environment_names_teams_in_espn_codes():
+    """Every other tool speaks ESPN codes. If this one emitted nflverse's LA
+    and WAS, a model asked about LAR or WSH would find nothing."""
+    import pathlib
+    import tempfile
+
+    from ff_assist import tools
+    from ff_assist.config import Settings
+
+    st = Settings(
+        espn_s2="x" * 300,
+        swid="{1A2B3C4D-5E6F-7081-92A3-B4C5D6E7F809}",
+        season=2026,
+        leagues=(),
+        cache_dir=pathlib.Path(tempfile.mkdtemp()),
+        log_level="INFO",
+        mcp_bearer_token="",
+        fantasypros_api_key="",
+    )
+    seen: set[str] = set()
+    for week in (1, 2, 3):
+        for game in tools.get_game_environment(week, settings=st)["games"]:
+            seen.update(game["matchup"].split("@"))
+    assert "LAR" in seen and "LA" not in seen, "Rams must be LAR, not nflverse's LA"
+    assert "WSH" in seen and "WAS" not in seen, "Commanders must be WSH, not WAS"

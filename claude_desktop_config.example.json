@@ -20,7 +20,7 @@
       "args": [
         "run",
         "--directory",
-        "/Volumes/OWSD/jaikaruppuswamy/development/fl-ass-ist",
+        "/absolute/path/to/fl-ass-ist",
         "--extra",
         "mcp",
         "python",

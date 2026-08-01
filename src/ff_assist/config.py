@@ -33,9 +33,7 @@ __all__ = [
 ]
 
 # A SWID looks like {1A2B3C4D-5E6F-7081-92A3-B4C5D6E7F809}
-_SWID_RE = re.compile(
-    r"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$"
-)
+_SWID_RE = re.compile(r"^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$")
 _PLACEHOLDER_SWID = "{00000000-0000-0000-0000-000000000000}"
 _KEY_RE = re.compile(r"^[a-z0-9_]+$")
 
@@ -148,6 +146,12 @@ class Settings:
     log_level: str
     mcp_bearer_token: str
     fantasypros_api_key: str
+    # --- remote OAuth (Claude's connector UI accepts OAuth only) ---
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    allowed_github_users: tuple[str, ...] = ()
+    public_url: str = ""
+    jwt_signing_key: str = ""
 
     @property
     def league_keys(self) -> tuple[str, ...]:
@@ -158,8 +162,7 @@ class Settings:
         for lg in self.leagues:
             if lg.key == key:
                 return lg
-        known = ", ".join(self.league_keys) or "(none)"
-        raise KeyError(f"Unknown league key {key!r}. Known keys: {known}")
+        raise KeyError(f"Unknown league key {key!r}. Known keys: {', '.join(self.league_keys) or '(none)'}")
 
     def redacted(self) -> dict[str, object]:
         """A dict safe to print or log."""
@@ -180,6 +183,11 @@ class Settings:
             "log_level": self.log_level,
             "mcp_bearer_token": mask(self.mcp_bearer_token),
             "fantasypros_api_key": mask(self.fantasypros_api_key),
+            "github_client_id": mask(self.github_client_id),
+            "github_client_secret": mask(self.github_client_secret),
+            "allowed_github_users": list(self.allowed_github_users),
+            "public_url": self.public_url,
+            "jwt_signing_key": mask(self.jwt_signing_key),
         }
 
 
@@ -191,9 +199,7 @@ class Settings:
 def _parse_leagues(errors: list[str]) -> tuple[LeagueConfig, ...]:
     raw_keys = _get("FF_LEAGUE_KEYS")
     if not raw_keys:
-        errors.append(
-            "FF_LEAGUE_KEYS is empty — list your league handles, e.g. 'main,dynasty,work'."
-        )
+        errors.append("FF_LEAGUE_KEYS is empty — list your league handles, e.g. 'main,dynasty,work'.")
         return ()
 
     leagues: list[LeagueConfig] = []
@@ -204,10 +210,7 @@ def _parse_leagues(errors: list[str]) -> tuple[LeagueConfig, ...]:
         if not key:
             continue
         if not _KEY_RE.match(key):
-            errors.append(
-                f"League key {piece.strip()!r} is invalid — "
-                "use lowercase letters, digits, underscores."
-            )
+            errors.append(f"League key {piece.strip()!r} is invalid — use lowercase letters, digits, underscores.")
             continue
         if key in seen:
             errors.append(f"League key {key!r} is listed twice in FF_LEAGUE_KEYS.")
@@ -251,15 +254,20 @@ def load_settings(*, require_espn: bool = True, reload: bool = True) -> Settings
         ConfigError: with every problem listed at once, so you can fix the
             whole file in one pass instead of one error per run.
     """
+    # A .env file is the local development path. In production there is no
+    # such file — Fly/Railway inject the same names as environment variables —
+    # so its absence is only an error when the environment is empty too.
+    # Requiring the file outright meant the deployed container could not boot.
     path = env_path()
-    if not path.is_file():
+    if path.is_file():
+        load_dotenv(path, override=reload)
+    elif not (os.environ.get("ESPN_S2") or os.environ.get("FF_LEAGUE_KEYS")):
         raise ConfigError(
-            f"No .env file at {path}.\n"
-            f"  Create one with:  cp .env.example .env\n"
-            f"  Then fill in your ESPN cookies and league IDs."
+            f"No configuration found. Either:\n"
+            f"  - create a .env file at {path}  (cp .env.example .env), or\n"
+            f"  - set ESPN_S2, ESPN_SWID, FF_LEAGUE_KEYS and FF_LEAGUE_*_ID as\n"
+            f"    environment variables (this is what `fly secrets set` does)."
         )
-
-    load_dotenv(path, override=reload)
 
     errors: list[str] = []
 
@@ -269,13 +277,13 @@ def load_settings(*, require_espn: bool = True, reload: bool = True) -> Settings
     if require_espn:
         if not espn_s2:
             errors.append("ESPN_S2 is empty — see README > Getting your ESPN cookies.")
-        elif espn_s2.startswith("espn_s2="):
-            errors.append("ESPN_S2 includes the 'espn_s2=' prefix — paste only the value.")
         elif len(espn_s2) < _MIN_S2_LEN:
             errors.append(
                 f"ESPN_S2 looks truncated ({len(espn_s2)} chars; expected 300+). "
                 "Copy the full cookie Value, not what's shown in the narrow column."
             )
+        elif espn_s2.startswith("espn_s2="):
+            errors.append("ESPN_S2 includes the 'espn_s2=' prefix — paste only the value.")
 
         if not swid:
             errors.append("ESPN_SWID is empty — see README > Getting your ESPN cookies.")
@@ -312,6 +320,13 @@ def load_settings(*, require_espn: bool = True, reload: bool = True) -> Settings
         log_level=log_level,
         mcp_bearer_token=_get("FF_MCP_BEARER_TOKEN"),
         fantasypros_api_key=_get("FANTASYPROS_API_KEY"),
+        github_client_id=_get("FF_GITHUB_CLIENT_ID"),
+        github_client_secret=_get("FF_GITHUB_CLIENT_SECRET"),
+        allowed_github_users=tuple(
+            u.strip() for u in _get("FF_ALLOWED_GITHUB_USERS").split(",") if u.strip()
+        ),
+        public_url=_get("FF_PUBLIC_URL"),
+        jwt_signing_key=_get("FF_JWT_SIGNING_KEY"),
     )
 
 

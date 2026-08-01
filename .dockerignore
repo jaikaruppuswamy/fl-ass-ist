@@ -1,0 +1,16 @@
+# Secrets must never enter the build context
+.env
+.env.*
+secrets/
+*.pem
+*.key
+
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+data/cache
+tests
+*.md

@@ -190,7 +190,7 @@ def optimize_lineup(
     # Pad with dummy players so the matrix is never wider than it is tall.
     width = max(n, m)
     cost: list[list[float]] = []
-    for i, slot in enumerate(slots):
+    for slot in slots:
         row = []
         for j in range(width):
             if j >= m or slot not in eligibility[j]:

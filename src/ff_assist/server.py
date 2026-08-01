@@ -14,24 +14,53 @@ account for no real gain, since you approve every move anyway.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 
-from .config import ConfigError, get_settings
 from . import tools
+from .config import ConfigError, get_settings
+from .datastore import DataStore, set_store
 
 log = logging.getLogger("ff_assist.server")
 
 
-def build_server() -> Any:
+def build_server(*, require_auth: bool = False) -> Any:
     try:
         from fastmcp import FastMCP
     except ImportError as exc:  # pragma: no cover
-        raise SystemExit(
-            "fastmcp is not installed. Run:  uv sync --extra mcp"
-        ) from exc
+        raise SystemExit("fastmcp is not installed. Run:  uv sync --extra mcp") from exc
+
+    settings = get_settings()
+
+    auth = None
+    middleware = []
+    if require_auth:
+        import asyncio
+
+        from .auth import (
+            GitHubUserAllowlist,
+            RateLimiter,
+            build_github_auth,
+            seed_claude_clients,
+        )
+
+        auth = build_github_auth(settings)
+        # Claude sends a CIMD client_id and expects us to fetch the metadata
+        # document from claude.ai. Cloudflare answers 403 to that fetch from a
+        # datacenter address, so we register the client ourselves instead.
+        try:
+            asyncio.run(seed_claude_clients(auth))
+        except Exception as exc:  # noqa: BLE001 — never block startup on this
+            log.warning("could not pre-seed Claude OAuth clients: %s", exc)
+        # Order matters: the allowlist must run before anything else, so an
+        # unauthorised GitHub account cannot even enumerate the tools.
+        middleware.append(GitHubUserAllowlist(set(settings.allowed_github_users)))
+        middleware.append(RateLimiter())
 
     mcp = FastMCP(
+        auth=auth,
+        middleware=middleware or None,
         name="ff-assist",
         instructions=(
             "Fantasy football analysis across the user's ESPN leagues. Call "
@@ -42,6 +71,21 @@ def build_server() -> Any:
             "claim a lineup or waiver move has been made."
         ),
     )
+
+    @mcp.tool
+    def health() -> dict[str, Any]:
+        """Server status: configured leagues, and whether the nflverse frames
+        are warm. Useful as the first call in a scheduled task, so a broken
+        deploy surfaces immediately rather than as a confusing empty brief."""
+        from .datastore import get_store
+
+        store = get_store()
+        return {
+            "ok": True,
+            "season": settings.season,
+            "leagues": list(settings.league_keys),
+            "datastore": store.status() if store else "not warmed (stdio mode)",
+        }
 
     @mcp.tool
     def list_leagues() -> dict[str, Any]:
@@ -126,32 +170,73 @@ def build_server() -> Any:
         """
         return tools.get_ros_schedule_strength(league_key, from_week)
 
+    @mcp.tool
+    def get_waiver_board(
+        league_key: str, top_n: int = 20, week: int | None = None
+    ) -> dict[str, Any]:
+        """Free agents worth claiming, ranked against what this roster is
+        actually short of, with a suggested FAAB band per claim and drop
+        candidates from the bench. Waiver accuracy is the second-largest
+        source of edge in this system, above start/sit.
+
+        Args:
+            league_key: short league handle from list_leagues
+            top_n: how many claims to return (default 20)
+            week: NFL week; defaults to the league's current week
+        """
+        return tools.get_waiver_board(league_key, top_n, week)
+
     return mcp
 
 
 def main() -> int:
+    """Entry point for both transports.
+
+    stdio  — local development against the desktop app (the default).
+    http   — the deployed server. Requires FF_MCP_BEARER_TOKEN and warms the
+             nflverse frames at boot so the first real request is fast.
+
+    Selected by FF_TRANSPORT, or --http. PORT is honoured because every PaaS
+    injects it.
+    """
     logging.basicConfig(
-        level=getattr(logging, get_settings().log_level, logging.INFO)
-        if _settings_ok()
-        else logging.INFO,
-        stream=sys.stderr,  # stdout is the MCP transport — never log to it
+        level=logging.INFO,
+        stream=sys.stderr,  # stdout is the stdio transport — never log to it
         format="%(levelname)s %(name)s: %(message)s",
     )
+
     try:
-        get_settings()
+        settings = get_settings()
     except ConfigError as exc:
         print(f"Configuration problem:\n{exc}", file=sys.stderr)
         return 1
-    build_server().run()
-    return 0
 
+    logging.getLogger().setLevel(getattr(logging, settings.log_level, logging.INFO))
 
-def _settings_ok() -> bool:
+    transport = os.environ.get("FF_TRANSPORT", "stdio").lower()
+    if "--http" in sys.argv:
+        transport = "http"
+
+    if transport != "http":
+        build_server().run()
+        return 0
+
+    store = DataStore(settings.season)
+    set_store(store)
+    store.warm()
+
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8000"))
+    log.info("serving http on %s:%s", host, port)
+
     try:
-        get_settings()
-        return True
-    except ConfigError:
-        return False
+        server = build_server(require_auth=True)
+    except Exception as exc:  # noqa: BLE001 — a weak token lands here
+        print(f"Refusing to start: {exc}", file=sys.stderr)
+        return 1
+
+    server.run(transport="http", host=host, port=port)
+    return 0
 
 
 if __name__ == "__main__":

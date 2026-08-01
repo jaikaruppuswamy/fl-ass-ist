@@ -229,3 +229,29 @@ def test_win_probability_is_monotonic():
     assert _win_probability(20) > 0.5 > _win_probability(-20)
     assert _win_probability(100) > _win_probability(40)
     assert 0.0 <= _win_probability(-500) and _win_probability(500) <= 1.0
+
+
+def test_predraft_error_is_readable_not_a_raw_keyerror():
+    """Before a draft, espn-api raises KeyError('rosterForCurrentScoringPeriod').
+    Surfacing that verbatim makes a normal August state look like a crash."""
+    from ff_assist.tools import _no_roster_reason
+
+    class League:
+        current_week = 0
+
+    message = _no_roster_reason(League(), KeyError("rosterForCurrentScoringPeriod"))
+    assert "has not drafted yet" in message
+    assert "rosterForCurrentScoringPeriod" not in message
+    assert "re-run after your draft" in message
+
+
+def test_a_genuine_midseason_failure_still_shows_the_detail():
+    """In September an error probably IS real — do not swallow it."""
+    from ff_assist.tools import _no_roster_reason
+
+    class League:
+        current_week = 6
+
+    message = _no_roster_reason(League(), ValueError("upstream exploded"))
+    assert "week 6" in message
+    assert "upstream exploded" in message

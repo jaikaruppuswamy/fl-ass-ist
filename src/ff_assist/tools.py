@@ -18,12 +18,19 @@ from typing import Any
 
 from .cache import Cache, key_for
 from .config import LeagueConfig, Settings, get_settings
-from .espn_client import ESPNError, get_league, my_team
+from .datastore import get_store
 from .dvp import defense_vs_position, dvp_for_team, ros_schedule_strength
-from .game_env import load_week_environment, team_environment_map
+from .espn_client import ESPNError, get_league, my_team
+from .game_env import (
+    load_week_environment,
+    team_environment_map,
+    to_espn_team,
+    to_nflverse_team,
+)
 from .scoring import ScoringSettings
 from .slots import LineupSlots, optimize_lineup
-from .usage import player_usage, usage_for_roster
+from .usage import normalize_name, player_usage, usage_for_roster
+from .waivers import roster_needs, score_free_agent, suggest_faab, trending_adds
 
 __all__ = [
     "list_leagues",
@@ -33,6 +40,7 @@ __all__ = [
     "get_player_trend",
     "get_defense_vs_position",
     "get_ros_schedule_strength",
+    "get_waiver_board",
 ]
 
 # Weekly fantasy team scores have a standard deviation around 25-30 points, so
@@ -40,6 +48,25 @@ __all__ = [
 # margin into a rough win probability — it is a sanity anchor, not a model, and
 # is labelled as such in the response.
 _MARGIN_SIGMA = 40.0
+
+
+def _no_roster_reason(league: Any, exc: Exception) -> str:
+    """Turn espn-api's raw failure into something readable at 9:30 on a Sunday.
+
+    Before a league drafts, ESPN has no roster for the scoring period and
+    espn-api raises a bare KeyError('rosterForCurrentScoringPeriod'). Surfacing
+    that verbatim makes a completely normal August state look like a crash —
+    and worse, it trains you to ignore the message in September when it might
+    mean something real.
+    """
+    week = getattr(league, "current_week", None)
+    detail = str(exc).strip("'\"")
+    if detail == "rosterForCurrentScoringPeriod" or not week:
+        return (
+            "this league has not drafted yet — ESPN has no roster for the current "
+            "scoring period. Expected before late August; re-run after your draft."
+        )
+    return f"no roster available for week {week}: {type(exc).__name__}: {exc}"
 
 
 def _cache(settings: Settings) -> Cache:
@@ -172,7 +199,7 @@ def get_matchup(
     try:
         boxes = lg.box_scores(week=week)
     except Exception as exc:  # noqa: BLE001 — preseason and bye weeks both land here
-        return {"league": cfg.key, "week": week, "error": f"no box score available: {exc}"}
+        return {"league": cfg.key, "week": week, "error": _no_roster_reason(lg, exc)}
 
     for box in boxes:
         home_id = getattr(box.home_team, "team_id", None)
@@ -253,7 +280,7 @@ def get_start_sit_slate(
         if roster is None:
             raise LookupError("team not in any box score")
     except Exception as exc:  # noqa: BLE001
-        return {"league": cfg.key, "week": week, "error": f"no roster available: {exc}"}
+        return {"league": cfg.key, "week": week, "error": _no_roster_reason(lg, exc)}
 
     def projection(p: Any) -> float:
         breakdown = getattr(p, "projected_breakdown", None)
@@ -294,14 +321,15 @@ def get_start_sit_slate(
     # a slate with no Vegas line is still worth having.
     env = _safe_environment(settings.season, week)
     usage = _safe_usage(available, settings.season)
+    dvp = _safe_dvp(scoring, settings.season)
 
     rows: list[dict[str, Any]] = []
-    for slot, player in zip(slots, optimal):
+    for slot, player in zip(slots, optimal, strict=True):
         if player is None:
             rows.append({"slot": slot, "recommended": None, "note": "no eligible player"})
             continue
         row = _player_row(player, scoring, slot=slot)
-        _enrich(row, player, env, usage)
+        _enrich(row, player, env, usage, dvp)
         row["recommended"] = True
         rows.append(row)
 
@@ -310,7 +338,7 @@ def get_start_sit_slate(
         if p.name in optimal_names or projection(p) <= 0:
             continue
         row = _player_row(p, scoring)
-        _enrich(row, p, env, usage)
+        _enrich(row, p, env, usage, dvp)
         bench.append(row)
     bench.sort(key=lambda r: -(r.get("my_scoring_proj", r["espn_proj"])))
 
@@ -352,11 +380,26 @@ def _safe_weather(game: Any) -> dict[str, Any] | None:
     return keep
 
 
+def _frames(season: int) -> dict[str, Any]:
+    """Warm frames from the process store when the server has one, else None
+    so each helper loads for itself. Deployed runs take the fast path; the CLI
+    harness and tests take the slow one and behave identically."""
+    store = get_store()
+    if store is None:
+        return {"schedules": None, "stats": None, "snaps": None, "stats_season": season}
+    return {
+        "schedules": store.schedules(),
+        "stats": store.player_stats(),
+        "snaps": store.snap_counts(),
+        "stats_season": store.resolve_stats_season(),
+    }
+
+
 def _safe_environment(season: int, week: int) -> dict[str, dict[str, Any]]:
     """Vegas environment for the week, or {} if nflverse is unreachable or the
     books have not priced this far ahead (they run about three weeks out)."""
     try:
-        return team_environment_map(season, week)
+        return team_environment_map(season, week, _frames(season)["schedules"])
     except Exception:  # noqa: BLE001
         return {}
 
@@ -368,9 +411,24 @@ def _safe_usage(players: list[Any], season: int) -> dict[str, dict[str, Any]]:
     names = [
         (p.name, getattr(p, "position", None), getattr(p, "proTeam", None)) for p in players
     ]
-    for candidate in (season, season - 1):
+    frames = _frames(season)
+    warm_season = frames["stats_season"]
+
+    candidates: list[int] = []
+    for candidate in (warm_season, season, season - 1):
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        warm = candidate == warm_season
         try:
-            out = usage_for_roster(names, candidate, weeks=4)
+            out = usage_for_roster(
+                names,
+                candidate,
+                weeks=4,
+                stats=frames["stats"] if warm else None,
+                snaps=frames["snaps"] if warm else None,
+            )
         except Exception:  # noqa: BLE001
             # A season that has not started 404s. That is "no data yet", not
             # "unreachable" — keep going and try the prior season.
@@ -384,13 +442,37 @@ def _safe_usage(players: list[Any], season: int) -> dict[str, dict[str, Any]]:
     return {}
 
 
+def _safe_dvp(scoring: ScoringSettings, season: int) -> dict[str, Any]:
+    """Rolling 4-week defense-vs-position in this league's scoring, or {}.
+
+    Note this is a tie-breaker, not a headline. Measured across Jai's three
+    leagues the ranking barely moves between scoring formats, so treat a soft
+    matchup as a nudge rather than a reason.
+    """
+    frames = _frames(season)
+    for candidate in (frames["stats_season"], season - 1):
+        try:
+            out = defense_vs_position(
+                scoring,
+                candidate,
+                window=4,
+                stats=frames["stats"] if candidate == frames["stats_season"] else None,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if "error" not in out:
+            return out
+    return {}
+
+
 def _enrich(
     row: dict[str, Any],
     player: Any,
     env: dict[str, dict[str, Any]],
     usage: dict[str, dict[str, Any]],
+    dvp: dict[str, Any] | None = None,
 ) -> None:
-    """Attach game environment and usage trend to a player row, in place."""
+    """Attach game environment, usage trend and matchup to a player row."""
     team_env = env.get(getattr(player, "proTeam", "") or "")
     if team_env:
         if team_env.get("implied_total") is not None:
@@ -398,6 +480,11 @@ def _enrich(
             row["spread"] = team_env["spread"]
         if team_env.get("weather_relevant") is False:
             row["indoors"] = True
+        if dvp:
+            opponent = to_nflverse_team(team_env.get("opp"))
+            cell = dvp_for_team(dvp, opponent, row.get("pos")) if opponent else None
+            if cell:
+                row.update(cell)
 
     u = usage.get(row["name"])
     if u and "error" not in u:
@@ -433,8 +520,12 @@ def get_game_environment(week: int | None = None, settings: Settings | None = No
 
     rows = []
     for g in games:
+        # Emit ESPN codes. load_week_environment carries nflverse's raw codes,
+        # so without this the one tool that names teams would say LA and WAS
+        # while every other tool says LAR and WSH — and a model asked about
+        # LAR would find nothing.
         row: dict[str, Any] = {
-            "matchup": f"{g.away}@{g.home}",
+            "matchup": f"{to_espn_team(g.away)}@{to_espn_team(g.home)}",
             "total": g.total_line,
             "spread_home": g.spread_line,
             "implied_home": g.implied_home,
@@ -533,7 +624,7 @@ def get_defense_vs_position(
             out = defense_vs_position(
                 scoring, season, window=window or None, positions=positions
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             continue
         if "error" not in out:
             out["league"] = cfg.key
@@ -576,8 +667,6 @@ def get_ros_schedule_strength(
             "error": "roster is empty — nothing to schedule until the draft",
         }
 
-    from .game_env import to_nflverse_team
-
     entries = [
         (p.name, to_nflverse_team(getattr(p, "proTeam", None)), getattr(p, "position", None))
         for p in team.roster
@@ -614,3 +703,108 @@ def get_ros_schedule_strength(
             "position; higher is an easier schedule. Weeks 15-17 count double."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# 8. get_waiver_board
+# ---------------------------------------------------------------------------
+
+
+def get_waiver_board(
+    league_key: str,
+    top_n: int = 20,
+    week: int | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Free agents worth claiming, ranked against what this roster is short of.
+
+    The plan ranks waiver accuracy as the second-biggest source of edge, above
+    flex and start/sit. So this leads with roster holes rather than raw
+    projections: a startable RB when you have two for three slots is worth far
+    more than a better bench WR.
+
+    Includes a FAAB band per claim and, when Sleeper is reachable, how many
+    managers added the player in the last 24 hours — useful for judging how
+    contested a claim will be.
+    """
+    settings, cfg = _resolve(league_key, settings)
+    try:
+        lg = get_league(cfg, settings=settings)
+        raw = lg.espn_request.get_league().get("settings", {})
+    except ESPNError as exc:
+        return {"league": cfg.key, "error": str(exc).splitlines()[0]}
+
+    scoring = ScoringSettings.from_raw(raw, cfg.key)
+    lineup = LineupSlots.from_raw(raw.get("rosterSettings", {}))
+    week = week or lg.current_week or 1
+
+    team = my_team(lg, cfg)
+    roster = list(getattr(team, "roster", []) or []) if team else []
+    needs = roster_needs(roster, lineup.starting_slots) if roster else {}
+
+    try:
+        pool = lg.free_agents(week=week, size=max(top_n * 3, 60))
+    except Exception as exc:  # noqa: BLE001
+        return {"league": cfg.key, "week": week, "error": _no_roster_reason(lg, exc)}
+
+    if not pool:
+        return {
+            "league": cfg.key,
+            "week": week,
+            "error": "free agent pool is empty — normal before the draft",
+        }
+
+    usage = _safe_usage(pool[: top_n * 2], settings.season)
+    trending = trending_adds()
+
+    rows: list[dict[str, Any]] = []
+    for player in pool:
+        row = score_free_agent(player, scoring, needs=needs, usage=usage.get(player.name))
+        adds = trending.get(normalize_name(player.name))
+        if adds:
+            row["trending_adds_24h"] = adds
+        row["faab"] = suggest_faab(row, contested=bool(adds and adds > 5000))
+        rows.append(row)
+
+    # Rank: filling a hole beats raw projection, and a rising role beats a
+    # static one at the same number.
+    def rank(row: dict[str, Any]) -> tuple:
+        need = {"critical": 2, "thin": 1}.get(row.get("fills_need"), 0)
+        rising = 1 if row.get("usage_trend") == "rising" else 0
+        return (-need, -rising, -row.get("espn_proj_avg", 0.0))
+
+    rows.sort(key=rank)
+
+    # Drop candidates: rostered, not a starter, lowest projected.
+    drops: list[dict[str, Any]] = []
+    if roster:
+        starters = {p.name for p in roster if getattr(p, "lineupSlot", "") not in ("BE", "IR", "")}
+        bench = [p for p in roster if p.name not in starters]
+        bench.sort(key=lambda p: float(getattr(p, "projected_avg_points", 0) or 0))
+        drops = [
+            {
+                "name": p.name,
+                "pos": getattr(p, "position", None),
+                "espn_proj_avg": round(float(getattr(p, "projected_avg_points", 0) or 0), 2),
+            }
+            for p in bench[:4]
+        ]
+
+    out: dict[str, Any] = {
+        "league": cfg.key,
+        "week": week,
+        "scoring": scoring.format_label(),
+        "roster_needs": needs or "roster is empty or balanced",
+        "claims": rows[:top_n],
+        "drop_candidates": drops,
+        "faab_note": (
+            "Bands are shares of your REMAINING budget and are deliberately "
+            "coarse — they have never seen your leaguemates bid."
+        ),
+    }
+    if not trending:
+        out["trending_unavailable"] = (
+            "Sleeper add counts could not be fetched; claims are ranked without "
+            "the crowd-contest signal."
+        )
+    return out

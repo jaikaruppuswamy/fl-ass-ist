@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Phase 1+: the MCP server itself. `uv sync --extra mcp`
-mcp = ["fastmcp>=3.4.5"]
+mcp = ["fastmcp>=3.4.5", "py-key-value-aio[disk]>=0.2"]
 
 [dependency-groups]
 dev = ["ruff>=0.6", "pytest>=8.0"]
@@ -40,3 +40,4 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["slow: spins up a real HTTP server or touches disk stores"]
