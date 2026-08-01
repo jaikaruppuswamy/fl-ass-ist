@@ -35,6 +35,7 @@ __all__ = ["roster_needs", "suggest_faab", "trending_adds", "score_free_agent"]
 log = logging.getLogger("ff_assist.waivers")
 
 SLEEPER_TRENDING_URL = "https://api.sleeper.app/v1/players/nfl/trending/add"
+SLEEPER_PLAYERS_URL = "https://api.sleeper.app/v1/players/nfl"
 
 #: Bands are shares of the REMAINING budget, and coarse on purpose. A precise
 #: bid from a model that has never seen your leaguemates bid is false
@@ -214,22 +215,56 @@ def trending_adds(limit: int = 25, *, fetch: Any = None) -> dict[str, int]:
     if not counts:
         return {}
 
+    # Sleeper answers in its own player ids, so they have to be resolved to
+    # names. Two paths, because the first one is fragile: nflverse's crosswalk
+    # lives on a different host from the data releases and has returned 403
+    # from datacenter networks. Falling back to Sleeper's own dictionary keeps
+    # the overlay working from wherever the trending call itself succeeded.
+    names = _names_from_crosswalk(counts) or _names_from_sleeper(counts, fetch)
+    return names
+
+
+def _names_from_crosswalk(counts: dict[str, int]) -> dict[str, int]:
+    """Resolve via nflverse's ff_playerids. Small and cached, when reachable."""
     try:
         import nflreadpy as nfl
         import polars as pl
 
-        ids = nfl.load_ff_playerids()
-        frame = ids.filter(pl.col("sleeper_id").is_not_null())
+        frame = nfl.load_ff_playerids().filter(pl.col("sleeper_id").is_not_null())
     except Exception as exc:  # noqa: BLE001
-        log.info("player id crosswalk unavailable: %s", type(exc).__name__)
+        log.info("id crosswalk unavailable (%s) — trying Sleeper's dictionary", type(exc).__name__)
         return {}
 
-    by_name: dict[str, int] = {}
+    out: dict[str, int] = {}
     for row in frame.iter_rows(named=True):
         sleeper_id = str(row.get("sleeper_id") or "").split(".")[0]
         adds = counts.get(sleeper_id)
         if adds:
             name = row.get("name") or row.get("merge_name")
             if name:
-                by_name[normalize_name(name)] = adds
-    return by_name
+                out[normalize_name(name)] = adds
+    return out
+
+
+def _names_from_sleeper(counts: dict[str, int], fetch: Any) -> dict[str, int]:
+    """Resolve via Sleeper's full player dictionary.
+
+    Roughly 5MB, so it is the fallback rather than the default — but it comes
+    from the host that just answered the trending call, which makes it the more
+    reliable of the two when the network is the problem.
+    """
+    try:
+        players = fetch(SLEEPER_PLAYERS_URL, {})
+    except Exception as exc:  # noqa: BLE001
+        log.info("Sleeper player dictionary unavailable: %s", type(exc).__name__)
+        return {}
+
+    out: dict[str, int] = {}
+    for sleeper_id, adds in counts.items():
+        record = (players or {}).get(sleeper_id) or {}
+        name = record.get("full_name") or " ".join(
+            x for x in (record.get("first_name"), record.get("last_name")) if x
+        )
+        if name:
+            out[normalize_name(name)] = adds
+    return out

@@ -159,3 +159,64 @@ def test_trending_degrades_to_empty_when_sleeper_is_unreachable():
 def test_trending_handles_an_empty_response():
     assert trending_adds(fetch=lambda u, p: []) == {}
     assert trending_adds(fetch=lambda u, p: None) == {}
+
+
+# --- id resolution: two paths, because the first one is fragile -------------
+
+
+def test_falls_back_to_sleeper_dictionary_when_the_crosswalk_is_blocked(monkeypatch):
+    """nflverse's crosswalk lives on a host that has 403'd from datacenter
+    networks. The overlay must survive that, not vanish."""
+    import ff_assist.waivers as w
+
+    monkeypatch.setattr(w, "_names_from_crosswalk", lambda counts: {})
+
+    def fake_fetch(url, params):
+        if "trending" in url:
+            return [{"player_id": "4034", "count": 12000}]
+        return {"4034": {"full_name": "Christian McCaffrey", "position": "RB"}}
+
+    out = w.trending_adds(fetch=fake_fetch)
+    assert out == {w.normalize_name("Christian McCaffrey"): 12000}
+
+
+def test_crosswalk_is_preferred_when_it_works(monkeypatch):
+    import ff_assist.waivers as w
+
+    monkeypatch.setattr(w, "_names_from_crosswalk", lambda counts: {"someone": 5})
+    called = []
+
+    def fake_fetch(url, params):
+        if "trending" in url:
+            return [{"player_id": "1", "count": 5}]
+        called.append(url)
+        return {}
+
+    assert w.trending_adds(fetch=fake_fetch) == {"someone": 5}
+    assert not called, "should not download the 5MB dictionary when the crosswalk works"
+
+
+def test_both_paths_failing_degrades_to_empty(monkeypatch):
+    import ff_assist.waivers as w
+
+    monkeypatch.setattr(w, "_names_from_crosswalk", lambda counts: {})
+
+    def fake_fetch(url, params):
+        if "trending" in url:
+            return [{"player_id": "1", "count": 5}]
+        raise TimeoutError("blocked")
+
+    assert w.trending_adds(fetch=fake_fetch) == {}
+
+
+def test_sleeper_records_without_full_name_are_assembled_from_parts(monkeypatch):
+    import ff_assist.waivers as w
+
+    monkeypatch.setattr(w, "_names_from_crosswalk", lambda counts: {})
+
+    def fake_fetch(url, params):
+        if "trending" in url:
+            return [{"player_id": "9", "count": 3}]
+        return {"9": {"first_name": "Puka", "last_name": "Nacua"}}
+
+    assert w.trending_adds(fetch=fake_fetch) == {w.normalize_name("Puka Nacua"): 3}

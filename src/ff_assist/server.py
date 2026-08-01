@@ -73,19 +73,30 @@ def build_server(*, require_auth: bool = False) -> Any:
     )
 
     @mcp.tool
-    def health() -> dict[str, Any]:
+    def health(probe_external: bool = False) -> dict[str, Any]:
         """Server status: configured leagues, and whether the nflverse frames
         are warm. Useful as the first call in a scheduled task, so a broken
-        deploy surfaces immediately rather than as a confusing empty brief."""
+        deploy surfaces immediately rather than as a confusing empty brief.
+
+        Args:
+            probe_external: also check Open-Meteo and Sleeper reachability
+                *from the server*, which is a different network from your
+                laptop. Adds a couple of seconds; leave it off for the
+                routine check and turn it on when you want to know whether
+                the weather and waiver-trending overlays actually work here.
+        """
         from .datastore import get_store
 
         store = get_store()
-        return {
+        out: dict[str, Any] = {
             "ok": True,
             "season": settings.season,
             "leagues": list(settings.league_keys),
             "datastore": store.status() if store else "not warmed (stdio mode)",
         }
+        if probe_external:
+            out["external"] = _probe_external()
+        return out
 
     @mcp.tool
     def list_leagues() -> dict[str, Any]:
@@ -187,6 +198,55 @@ def build_server(*, require_auth: bool = False) -> Any:
         return tools.get_waiver_board(league_key, top_n, week)
 
     return mcp
+
+
+def _probe_external() -> dict[str, Any]:
+    """Reachability of the two optional data sources, from this host.
+
+    Neither is load-bearing — weather is a tie-breaker and the Sleeper overlay
+    only gauges how contested a waiver claim is, and both degrade to absent.
+    But "absent because it is quiet" and "absent because it is blocked" look
+    identical in a brief, so it is worth being able to ask.
+    """
+    import time
+
+    import httpx
+
+    from .weather import OPEN_METEO_URL
+
+    results: dict[str, Any] = {}
+
+    for label, url, params in (
+        ("open_meteo", OPEN_METEO_URL, {"latitude": 42.77, "longitude": -78.79, "hourly": "wind_speed_10m"}),
+        ("sleeper", "https://api.sleeper.app/v1/players/nfl/trending/add", {"limit": 5}),
+    ):
+        started = time.monotonic()
+        try:
+            response = httpx.get(url, params=params, timeout=15)
+            results[label] = {
+                "status": response.status_code,
+                "ms": round((time.monotonic() - started) * 1000),
+                "ok": response.status_code == 200,
+            }
+        except Exception as exc:  # noqa: BLE001
+            results[label] = {"ok": False, "error": type(exc).__name__}
+
+    # The id crosswalk is the fragile hop — a different host from the nflverse
+    # releases, and one that has answered 403 from datacenter networks.
+    try:
+        from .waivers import trending_adds
+
+        started = time.monotonic()
+        names = trending_adds(limit=10)
+        results["trending_overlay"] = {
+            "ok": bool(names),
+            "resolved": len(names),
+            "ms": round((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:  # noqa: BLE001
+        results["trending_overlay"] = {"ok": False, "error": type(exc).__name__}
+
+    return results
 
 
 def main() -> int:

@@ -358,3 +358,51 @@ def test_denial_names_the_configured_allowlist_not_just_the_rejected_user(monkey
     assert "octocat" in message
     assert "<your github username>" in message, "must reveal what the server actually has"
     assert "fly secrets set" in message, "must say how to fix it"
+
+
+def test_health_probe_reports_each_source_separately(monkeypatch):
+    """A brief cannot tell 'quiet' from 'blocked'. The probe has to name which
+    source failed, not just say the overlay was empty."""
+    import ff_assist.server as srv
+
+    class Resp:
+        status_code = 200
+
+    monkeypatch.setattr("httpx.get", lambda *a, **k: Resp())
+    monkeypatch.setattr("ff_assist.waivers.trending_adds", lambda **k: {"a": 1, "b": 2})
+
+    out = srv._probe_external()
+    assert out["open_meteo"]["ok"] is True
+    assert out["sleeper"]["ok"] is True
+    assert out["trending_overlay"] == {"ok": True, "resolved": 2, "ms": out["trending_overlay"]["ms"]}
+
+
+def test_health_probe_names_the_failing_source(monkeypatch):
+    import ff_assist.server as srv
+
+    def boom(*a, **k):
+        raise TimeoutError("blocked")
+
+    monkeypatch.setattr("httpx.get", boom)
+    monkeypatch.setattr("ff_assist.waivers.trending_adds", lambda **k: {})
+
+    out = srv._probe_external()
+    assert out["open_meteo"]["ok"] is False
+    assert out["open_meteo"]["error"] == "TimeoutError"
+    assert out["trending_overlay"]["ok"] is False
+
+
+def test_probe_is_off_by_default_so_scheduled_health_stays_fast(monkeypatch):
+    """health() is the first call in every scheduled task. It must not pay for
+    two network round trips unless asked."""
+    import ff_assist.server as srv
+
+    called = []
+    monkeypatch.setattr(srv, "_probe_external", lambda: called.append(1) or {})
+    import inspect
+
+    sig = inspect.signature(srv.build_server)
+    assert "require_auth" in sig.parameters
+    # the default is encoded in the tool signature; assert it directly
+    src = inspect.getsource(srv.build_server)
+    assert "probe_external: bool = False" in src
