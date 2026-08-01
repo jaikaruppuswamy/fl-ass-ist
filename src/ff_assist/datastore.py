@@ -19,7 +19,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import polars as pl
 
@@ -28,6 +29,10 @@ __all__ = ["DataStore", "get_store", "set_store"]
 log = logging.getLogger("ff_assist.datastore")
 
 DEFAULT_REFRESH_SECONDS = 24 * 3600
+
+#: Projections are not like schedules. A Thursday number is stale by Sunday
+#: morning, and a stale projection is a wrong answer rather than a slow one.
+SLEEPER_REFRESH_SECONDS = 6 * 3600
 
 
 class DataStore:
@@ -59,21 +64,21 @@ class DataStore:
             self._loader = nflreadpy
         return self._loader
 
-    def _fresh(self, key: str) -> Any | None:
+    def _fresh(self, key: str, ttl: int | None = None) -> Any | None:
         entry = self._cache.get(key)
         if entry is None:
             return None
         stored_at, value = entry
-        if time.monotonic() - stored_at > self.refresh_seconds:
+        if time.monotonic() - stored_at > (ttl or self.refresh_seconds):
             return None
         return value
 
-    def _get(self, key: str, produce: Callable[[], Any]) -> Any:
-        hit = self._fresh(key)
+    def _get(self, key: str, produce: Callable[[], Any], *, ttl: int | None = None) -> Any:
+        hit = self._fresh(key, ttl)
         if hit is not None:
             return hit
         with self._lock:
-            hit = self._fresh(key)  # another thread may have won the race
+            hit = self._fresh(key, ttl)  # another thread may have won the race
             if hit is not None:
                 return hit
             value = produce()
@@ -99,6 +104,26 @@ class DataStore:
                 return None
 
         return self._get(f"snap_counts:{season}", produce)
+
+    def sleeper_projections(self, season: int, week: int) -> Any:
+        """Sleeper's projected stat lines for one week.
+
+        Not an nflverse frame, but it belongs here for the same reason the
+        others do: every player row in a slate wants it, refetching per request
+        would put a network round trip in front of the Sunday brief, and this
+        class already has the TTL and the lock.
+
+        Cached for six hours rather than the usual day. Projections move during
+        the week — a Thursday number is stale by Sunday morning, and staleness
+        here is not a slower answer but a wrong one.
+        """
+        from .projections import fetch_week
+
+        return self._get(
+            f"sleeper:{season}:{week}",
+            lambda: fetch_week(season, week),
+            ttl=SLEEPER_REFRESH_SECONDS,
+        )
 
     # -- season resolution --------------------------------------------------
 

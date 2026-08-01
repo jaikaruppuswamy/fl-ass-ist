@@ -63,7 +63,8 @@ def check_weather(quick: bool) -> list[str]:
     if quick:
         # One open-air, one southern hemisphere: enough to prove reachability
         # and that a sign error would be caught.
-        venues = [(n, v) for n, v in venues if n in ("Highmark Stadium", "Melbourne Cricket Ground")]
+        keep = ("Highmark Stadium", "Melbourne Cricket Ground")
+        venues = [(n, v) for n, v in venues if n in keep]
 
     probe = venues[0][1]
     try:
@@ -120,7 +121,8 @@ def check_weather(quick: bool) -> list[str]:
             time.sleep(0.12)
 
     if not failures:
-        print(f"  {DIM}wind thresholds: notable >=15, severe >=20 · e.g. {wind_verdict(22.0)}{RESET}")
+        print(f"  {DIM}wind thresholds: notable >=15, severe >=20 · "
+              f"e.g. {wind_verdict(22.0)}{RESET}")
     return failures
 
 
@@ -130,7 +132,8 @@ def check_weather(quick: bool) -> list[str]:
 
 
 def check_sleeper() -> list[str]:
-    print(f"\n{BOLD}Sleeper trending adds{RESET} {DIM}(waiver overlay — no auth, 90 req/min){RESET}")
+    print(f"\n{BOLD}Sleeper trending adds{RESET} "
+          f"{DIM}(waiver overlay — no auth, 90 req/min){RESET}")
     import httpx
 
     failures: list[str] = []
@@ -208,7 +211,12 @@ def check_sleeper() -> list[str]:
     else:
         sample = sorted(names.items(), key=lambda kv: -kv[1])[:3]
         hop("end to end", f"{len(names)} players in {ms:.0f}ms")
-        print(f"    {DIM}most added: " + ", ".join(f"{n} ({c:,})" for n, c in sample) + RESET)
+        # Shown in normalized form because that is the key the waiver board
+        # joins on — a pretty name here would hide a join that is subtly off.
+        joined = ", ".join(f"{n} ({c:,})" for n, c in sample)
+        print(f"    {DIM}most added (join keys): {joined}{RESET}")
+        print(f"    {DIM}note: the ESPN side of this join is only exercised once a")
+        print(f"    free-agent pool exists — re-run after your draft.{RESET}")
 
     return failures
 
@@ -216,11 +224,117 @@ def check_sleeper() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def check_projections(season: int, week: int, diagnose: bool = False) -> list[str]:
+    """The second opinion the slate now ranks on. Load-bearing, unlike the rest
+    of this file — if it is unreachable the lineup falls back to ESPN alone,
+    which is a measurably worse answer rather than a missing footnote."""
+    print(f"\n{BOLD}Sleeper projections{RESET} {DIM}(the second opinion in every slate){RESET}")
+
+    from ff_assist.projections import fetch_week, infer_scoring, verify_crosswalk
+
+    t = time.monotonic()
+    week_data = fetch_week(season, week)
+    ms = (time.monotonic() - t) * 1000
+
+    if not week_data:
+        hop(
+            "reachable",
+            "empty — blocked here, or the week is not published yet",
+            warn=True,
+            ok=True,
+        )
+        return ["sleeper projections unavailable — slates fall back to ESPN alone"]
+    hop(f"{season} week {week}", f"{week_data.coverage} players usable, {ms:.0f}ms")
+
+    # The guard that runs on the live path, not just here. Players whose
+    # published total we cannot rebuild are dropped and fall back to ESPN.
+    if week_data.rejected:
+        rate = len(week_data.rejected) / (len(week_data.rejected) + len(week_data.lines))
+        hop(
+            "reproducible from stats",
+            f"{len(week_data.rejected)} dropped ({rate:.0%}), "
+            f"mean residual {week_data.mean_residual}",
+            warn=True,
+            ok=True,
+        )
+        worst_name, (ours, theirs) = max(
+            week_data.rejected.items(), key=lambda kv: abs(kv[1][0] - kv[1][1])
+        )
+        print(f"    {DIM}worst: {worst_name} — we rebuild {ours}, Sleeper says {theirs}")
+        print(f"    those players get no second opinion; the rest are unaffected.{RESET}")
+    else:
+        hop("reproducible from stats", "every player rebuilt from their own stat line")
+
+    # The crosswalk is falsifiable against a number we did not compute: Sleeper
+    # publishes its own PPR total alongside the components. If our translation
+    # of the components does not reproduce it, some category is being dropped
+    # and every projection built from it is wrong by an unknown amount.
+    report = verify_crosswalk(week_data)
+    failures: list[str] = []
+    if report.get("failed"):
+        worst = report.get("worst", {})
+        hop(
+            "stat crosswalk",
+            f"{report['failed']}/{report['checked']} disagree with Sleeper's own total",
+            ok=False,
+        )
+        if worst:
+            print(f"    {DIM}worst: {worst['player']} — we say {worst['ours']}, "
+                  f"Sleeper says {worst['sleeper']}{RESET}")
+        failures.append("sleeper stat crosswalk is wrong — projections are understated")
+    else:
+        hop("stat crosswalk", f"{report['checked']} players match Sleeper's own PPR total")
+
+    if diagnose:
+        # Which stat key, exactly. Least squares over Sleeper's own published
+        # totals recovers the per-unit value of every stat it returns, so the
+        # answer is read off rather than guessed at across several rounds.
+        print(f"\n  {BOLD}Inferred scoring{RESET} "
+              f"{DIM}(solved from Sleeper's own totals){RESET}")
+        inferred = infer_scoring(week_data)
+        if "error" in inferred:
+            print(f"    {WARN} {inferred['error']}")
+        else:
+            print(f"    {DIM}fitted over {inferred['players']} players{RESET}")
+            missing = inferred["unmapped_but_scored"]
+            wrong = inferred["mapped_but_mispriced"]
+            if missing:
+                print(f"    {RED}stat keys Sleeper scores that we do not map:{RESET}")
+                for k, v in sorted(missing.items(), key=lambda kv: -abs(kv[1])):
+                    print(f"      {k:<24}{v:>8.3f} pts/unit")
+            if wrong:
+                print(f"    {RED}keys whose assumed price is wrong "
+                      f"(our reference ruleset, not the crosswalk):{RESET}")
+                for k, v in wrong.items():
+                    print(f"      {k:<24}assumed {v['assumed']:>6.2f} "
+                          f"-> fitted {v['fitted']:>6.2f}")
+            if not missing and not wrong:
+                print(f"    {OK} nothing unexplained — the crosswalk and the "
+                      f"reference ruleset both agree with Sleeper")
+
+    if report.get("unmapped"):
+        hop(
+            "stat coverage",
+            f"{len(report['unmapped'])} unknown keys: {', '.join(report['unmapped'][:5])}",
+            warn=True,
+            ok=True,
+        )
+        print(f"    {DIM}unknown keys score zero. Add them to SLEEPER_TO_NFLVERSE.{RESET}")
+    else:
+        hop("stat coverage", "every returned stat key is mapped or knowingly ignored")
+
+    return failures
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--quick", action="store_true", help="two venues instead of all 39")
     ap.add_argument("--sleeper", action="store_true", help="only the Sleeper chain")
     ap.add_argument("--weather", action="store_true", help="only Open-Meteo")
+    ap.add_argument("--season", type=int, default=2026)
+    ap.add_argument("--week", type=int, default=1)
+    ap.add_argument("--diagnose", action="store_true",
+                    help="solve for the scoring rule Sleeper's own totals imply")
     args = ap.parse_args()
 
     do_weather = args.weather or not args.sleeper
@@ -241,6 +355,7 @@ def main() -> int:
         failures += check_weather(args.quick)
     if do_sleeper:
         failures += check_sleeper()
+        failures += check_projections(args.season, args.week, args.diagnose)
 
     print()
     if failures:
@@ -248,9 +363,11 @@ def main() -> int:
         for f in failures:
             print(f"    {f}")
         print(
-            f"\n{DIM}Neither source is load-bearing: weather is a tie-breaker and the\n"
-            f"trending overlay only gauges how contested a claim is. Both degrade to\n"
-            f"absent and say so. But knowing now beats discovering it in week 1.{RESET}"
+            f"\n{DIM}Weather is a tie-breaker and the trending overlay only gauges how\n"
+            f"contested a claim is; both degrade to absent and say so. Sleeper's\n"
+            f"projections are different — the slate ranks on the mean of ESPN and\n"
+            f"Sleeper, so losing them is a measurably worse lineup rather than a\n"
+            f"missing footnote. Knowing now beats discovering it in week 1.{RESET}"
         )
         return 1
 

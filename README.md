@@ -20,7 +20,7 @@ Eight tools, exposed over MCP:
 |---|---|
 | `list_leagues` | Every league: scoring format, roster shape, current week, your team |
 | `get_matchup` | Your starters vs your opponent's, projected margin, rough win probability |
-| `get_start_sit_slate` | Your lineup, the optimal lineup in that league's scoring, and the swaps |
+| `get_start_sit_slate` | Your lineup, the optimal lineup, and the swaps — ranked on the mean of ESPN's and Sleeper's projections, with disagreements flagged |
 | `get_waiver_board` | Free agents ranked against your roster holes, with FAAB bands |
 | `get_game_environment` | Vegas implied team totals, spreads, weather where it matters |
 | `get_player_trend` | Snap share, targets, target share, air yards, carries + direction |
@@ -197,6 +197,7 @@ src/ff_assist/
   usage.py         usage trends + the ESPN/nflverse player-name join
   dvp.py           defense-vs-position and rest-of-season schedule strength
   waivers.py       roster-hole detection, FAAB bands, Sleeper overlay
+  projections.py   Sleeper's second opinion, re-scored in each league's rules
   weather.py       stadium venue table + Open-Meteo, gated on roof
   cache.py         SQLite TTL cache
   datastore.py     warm nflverse frames, refreshed daily
@@ -208,9 +209,13 @@ scripts/
   verify_leagues.py        ESPN smoke test
   dump_league_settings.py  anonymized league dump → data/samples/
   try_tool.py              call any tool from the terminal
-  check_weather.py         validate stadium coordinates against Open-Meteo
+  check_external.py        Open-Meteo + Sleeper reachability, from anywhere
   backtest_2025.py         replay last season; does this actually help?
-tests/                     ~280 tests
+  projection_bakeoff.py    score rival projections against each other
+  snapshot_projections.py  freeze a week's projections before kickoff
+docs/
+  projections.md           what the bake-off found, and why not to buy a feed
+tests/                     ~370 tests
 data/samples/              anonymized league fixtures (committed)
 ```
 
@@ -224,12 +229,23 @@ Generate your own with `uv run scripts/dump_league_settings.py`.
 ## Testing
 
 ```bash
-uv run pytest                    # ~280 tests
+uv run pytest                    # ~370 tests
 uv run pytest -m "not slow"      # skip the ones that bind a socket
 ```
 
 Tests that need the network are skipped when it is unavailable, so the suite
 stays green offline.
+
+Third-party reachability is checked separately, because it differs by network:
+
+```bash
+uv run scripts/check_external.py                                              # your machine
+fly ssh console -C "/app/.venv/bin/python /app/scripts/check_external.py --quick"   # the deployed host
+```
+
+Or call `health(probe_external=true)` over MCP to get the same answer from the
+server without ssh. The distinction matters — a provider can serve a laptop
+happily and answer 403 to a datacenter address.
 
 The most interesting one is not a unit test:
 
@@ -242,6 +258,37 @@ week — what you actually started, what the optimizer would have picked, and th
 best available in hindsight. It validates every tool against real rosters *and*
 tells you whether the system would have earned its keep. Expect a small positive
 number; anyone promising a big one is selling something.
+
+Its companion asks the question one level up — not "did the optimizer help" but
+"would a better projection have helped":
+
+```bash
+uv run scripts/projection_bakeoff.py --espn --sleeper --pool-top 150
+```
+
+Eight candidate projections replayed week by week under strict lookback, scored
+on error, on start/sit accuracy, and on points left on the bench — plus a
+benchmark arm that knows each player's true season-long level, as par rather
+than as a ceiling.
+[`docs/projections.md`](docs/projections.md) is what it found, mistakes
+included — and there are nine of them, which is the useful part. The short
+version: rank on the mean of ESPN and Sleeper, both free; the pair beats
+anything you can build from nflverse history by 1.6-2.8 points of lineup per
+week across two seasons; and no paid feed is worth it, because the remaining
+headroom is well under a win a season.
+
+One companion runs on a clock rather than on demand:
+
+```bash
+uv run scripts/snapshot_projections.py --week 1     # every Saturday
+uv run scripts/snapshot_projections.py --diff 1     # after that week is played
+```
+
+Projection endpoints are fetched today for seasons that ended long ago, and a
+provider that quietly restates would make any backtest of it worthless. This
+freezes a week's numbers before kickoff so the archive can be checked against
+them afterwards. A snapshot not taken before the first Sunday cannot be taken
+later.
 
 ---
 
@@ -298,11 +345,11 @@ soft matchup as a nudge, not a reason.
 
 ### Known gaps
 
-- **The Sleeper trending-adds overlay is unverified.** It degrades to absent and
-  says so, but it has never run against the live API.
-- **`scripts/check_weather.py` has not been run against live Open-Meteo.** The
-  39 stadium coordinates are validated by asserting the timezone Open-Meteo
-  resolves matches the one expected — run it before trusting a wind reading.
+- **The ESPN side of the Sleeper join is unproven.** Sleeper, the nflverse id
+  crosswalk and name resolution all verified against the live APIs from both a
+  laptop and the deployed host. What has not been exercised is the final hop —
+  matching those names to players in an ESPN free-agent pool — because that pool
+  does not exist until leagues draft. Re-run `check_external.py` afterwards.
 - **No projections of our own.** Everything leans on ESPN's, which are mediocre
   at TE and DST. Implied team total and usage trend are weighted above them, but
   a real projection model is the obvious next step.

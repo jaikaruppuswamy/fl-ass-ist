@@ -255,3 +255,201 @@ def test_a_genuine_midseason_failure_still_shows_the_detail():
     message = _no_roster_reason(League(), ValueError("upstream exploded"))
     assert "week 6" in message
     assert "upstream exploded" in message
+
+
+# --- the Sleeper second opinion --------------------------------------------
+#
+# Everything above runs with Sleeper unreachable, which is the fallback path and
+# must stay byte-identical to the pre-integration behaviour. These exercise the
+# other branch: the consensus actually changing a lineup, and saying so.
+
+
+def fake_sleeper(**by_name):
+    """A SleeperWeek whose scored projection for each named player is fixed.
+
+    Built through the real constructor rather than a stub so the name
+    normalisation and the None-vs-zero distinction are exercised too.
+    """
+    from ff_assist.projections import SleeperWeek
+    from ff_assist.usage import normalize_name
+
+    week = SleeperWeek(season=2026, week=3)
+    for name, receiving_yards in by_name.items():
+        week.lines[normalize_name(name)] = {"receiving_yards": receiving_yards}
+    return week
+
+
+def test_sleeper_absent_leaves_the_slate_exactly_as_it_was(league_env, monkeypatch):
+    """The whole design promise: an outage at somebody else's undocumented
+    endpoint costs the second opinion and nothing else."""
+    settings, key, _ = league_env
+    monkeypatch.setattr(tools, "_safe_sleeper", lambda season, week: None)
+    without = tools.get_start_sit_slate(key, 3, settings=settings)
+
+    assert without["projection_basis"] == "espn"
+    for row in without["optimal_lineup"]:
+        if row.get("name"):
+            assert "sleeper_proj" not in row
+            assert "disagree" not in row
+            # The ranking number still exists and still equals ESPN's.
+            assert row["proj"] == row.get("my_scoring_proj", row["espn_proj"])
+
+
+def test_the_consensus_is_the_mean_of_the_two_sources(league_env, monkeypatch):
+    settings, key, _ = league_env
+    monkeypatch.setattr(
+        tools, "_safe_sleeper", lambda season, week: fake_sleeper(**{"Starter0-QB": 100})
+    )
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+
+    rows = {r["name"]: r for r in out["optimal_lineup"] + out["bench"] if r.get("name")}
+    row = rows.get("Starter0-QB")
+    if row is None:
+        pytest.skip("this league's slot shape does not produce that starter")
+    espn = row.get("my_scoring_proj", row["espn_proj"])
+    assert row["proj"] == pytest.approx(round((espn + row["sleeper_proj"]) / 2, 2), abs=0.01)
+
+
+def test_a_big_split_between_the_sources_is_flagged(league_env, monkeypatch):
+    settings, key, _ = league_env
+    monkeypatch.setattr(
+        tools, "_safe_sleeper", lambda season, week: fake_sleeper(**{"BenchStud-RB": 400})
+    )
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+
+    flagged = [
+        r for r in out["optimal_lineup"] + out["bench"]
+        if r.get("disagree") is not None
+    ]
+    assert flagged, "a 40-point gap between the sources must be surfaced"
+    assert all(abs(r["disagree"]) >= 3.0 for r in flagged)
+
+
+def test_agreement_is_not_reported(league_env, monkeypatch):
+    """Where the sources agree the consensus already says everything, and a
+    `disagree: 0.4` on every row is noise in a 5KB budget.
+
+    The fixture is built per-league rather than with a fixed stat line, because
+    an identical stat line does NOT score identically everywhere: gladiator
+    prices yardage in buckets, so 60 receiving yards is worth 6 there and 6.0
+    under per-yard PPR only by coincidence. Agreement has to be constructed in
+    points, not in yards.
+    """
+    settings, key, _ = league_env
+
+    # First pass: learn what ESPN says for each player in this league.
+    monkeypatch.setattr(tools, "_safe_sleeper", lambda season, week: None)
+    baseline = tools.get_start_sit_slate(key, 3, settings=settings)
+    espn_by_name = {
+        r["name"]: r["proj"]
+        for r in baseline["optimal_lineup"] + baseline["bench"]
+        if r.get("name")
+    }
+
+    class Echo:
+        """A Sleeper that agrees with ESPN exactly, whatever the scoring."""
+
+        coverage = "all/all"
+
+        def __bool__(self):
+            return True
+
+        def line_for(self, name):
+            return {"__echo__": espn_by_name.get(name)}
+
+    monkeypatch.setattr(tools, "_safe_sleeper", lambda season, week: Echo())
+    monkeypatch.setattr(
+        tools, "score_line", lambda line, scoring, position: (line or {}).get("__echo__")
+    )
+
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+    reported = [r for r in out["optimal_lineup"] + out["bench"] if r.get("sleeper_proj")]
+    assert reported, "the echo fixture should have produced sleeper columns"
+    for row in reported:
+        assert "disagree" not in row, row
+        assert row["proj"] == pytest.approx(row["sleeper_proj"], abs=0.01)
+
+
+def test_the_optimizer_ranks_on_the_consensus_not_on_espn(league_env, monkeypatch):
+    """The load-bearing claim of the whole integration: the lineup is chosen by
+    the consensus number, and the reported total is the sum of exactly those
+    rows. If the optimizer sorted by one number and the rows printed another,
+    every recommendation would be subtly unjustified by its own evidence."""
+    settings, key, _ = league_env
+    monkeypatch.setattr(
+        tools, "_safe_sleeper", lambda season, week: fake_sleeper(**{"BenchStud-RB": 0})
+    )
+    with_sleeper = tools.get_start_sit_slate(key, 3, settings=settings)
+
+    started = [r for r in with_sleeper["optimal_lineup"] if r.get("name")]
+    assert with_sleeper["optimal_projected"] == pytest.approx(
+        round(sum(r["proj"] for r in started), 2), abs=0.01
+    )
+
+    # No benched player may out-rank a started one on the number being ranked.
+    if started and with_sleeper["bench"]:
+        assert max(r["proj"] for r in with_sleeper["bench"]) <= max(
+            r["proj"] for r in started
+        )
+
+    monkeypatch.setattr(tools, "_safe_sleeper", lambda season, week: None)
+    espn_only = tools.get_start_sit_slate(key, 3, settings=settings)
+    assert with_sleeper["optimal_projected"] < espn_only["optimal_projected"], (
+        "zeroing the stud on one side must pull the consensus total down"
+    )
+
+
+def test_the_matchup_margin_uses_the_same_number_as_the_slate(league_env, monkeypatch):
+    """If the slate ranked on the consensus and the matchup summed ESPN, the two
+    tools would contradict each other inside one brief."""
+    settings, key, _ = league_env
+    monkeypatch.setattr(
+        tools, "_safe_sleeper", lambda season, week: fake_sleeper(**{"Starter0-QB": 100})
+    )
+    matchup = tools.get_matchup(key, 3, settings=settings)
+    assert "error" not in matchup
+    assert matchup["me"]["projected"] == pytest.approx(
+        round(sum(r["proj"] for r in matchup["me"]["starters"]), 2), abs=0.01
+    )
+
+
+def test_the_extra_columns_stay_inside_the_budget(league_env, monkeypatch):
+    settings, key, _ = league_env
+
+    def everything(season, week):
+        from ff_assist.projections import SleeperWeek
+        from ff_assist.usage import normalize_name
+
+        week_data = SleeperWeek(season=2026, week=3)
+        for i in range(20):
+            for pos in ("QB", "RB", "WR", "TE", "K", "D/ST"):
+                week_data.lines[normalize_name(f"Starter{i}-{pos}")] = {
+                    "receiving_yards": 90, "receptions": 7
+                }
+        week_data.lines[normalize_name("BenchStud-RB")] = {"rushing_yards": 200}
+        return week_data
+
+    monkeypatch.setattr(tools, "_safe_sleeper", everything)
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+    assert out["projection_basis"].startswith("espn+sleeper")
+    assert len(json.dumps(out).encode()) < 5 * 1024
+
+
+def test_the_basis_reports_coverage_not_just_presence(league_env, monkeypatch):
+    """Sleeper drops players whose published total it cannot rebuild, so
+    "espn+sleeper" can still mean some rows had one source. A boolean would
+    read as full coverage when it is not."""
+    settings, key, _ = league_env
+
+    def partial(season, week):
+        from ff_assist.projections import SleeperWeek
+        from ff_assist.usage import normalize_name
+
+        wk = SleeperWeek(season=2026, week=3)
+        wk.lines[normalize_name("BenchStud-RB")] = {"rushing_yards": 100}
+        wk.rejected["someoneelse"] = (12.0, 19.4)
+        return wk
+
+    monkeypatch.setattr(tools, "_safe_sleeper", partial)
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+    assert out["projection_basis"] == "espn+sleeper (1/2)"

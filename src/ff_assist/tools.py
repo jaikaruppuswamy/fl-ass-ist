@@ -27,6 +27,7 @@ from .game_env import (
     to_espn_team,
     to_nflverse_team,
 )
+from .projections import consensus, disagreement, fetch_week, score_line
 from .scoring import ScoringSettings
 from .slots import LineupSlots, optimize_lineup
 from .usage import normalize_name, player_usage, usage_for_roster
@@ -83,7 +84,48 @@ def _resolve(league_key: str, settings: Settings | None = None) -> tuple[Setting
     return settings, settings.league(league_key)
 
 
-def _player_row(p: Any, scoring: ScoringSettings, *, slot: str | None = None) -> dict[str, Any]:
+def _espn_projection(p: Any, scoring: ScoringSettings) -> float:
+    """ESPN's projection for a player, expressed in this league's scoring."""
+    breakdown = getattr(p, "projected_breakdown", None)
+    if breakdown:
+        return scoring.score(breakdown, getattr(p, "position", None)).points
+    return float(getattr(p, "projected_points", 0.0) or 0.0)
+
+
+def _sleeper_projection(
+    p: Any, scoring: ScoringSettings, sleeper: Any | None
+) -> float | None:
+    """Sleeper's projection for a player, in this league's scoring, or None."""
+    if not sleeper:
+        return None
+    return score_line(sleeper.line_for(p.name), scoring, getattr(p, "position", None))
+
+
+def _projector(scoring: ScoringSettings, sleeper: Any | None) -> Any:
+    """The function every ranking in this module sorts by.
+
+    The consensus of ESPN and Sleeper, which two seasons of replay say is at or
+    near the best available — see docs/projections.md. Falls back to whichever
+    source exists, so a Sleeper outage costs the second opinion and nothing
+    else.
+    """
+
+    def projection(p: Any) -> float:
+        value, _basis = consensus(
+            _espn_projection(p, scoring), _sleeper_projection(p, scoring, sleeper)
+        )
+        return value if value is not None else 0.0
+
+    return projection
+
+
+def _player_row(
+    p: Any,
+    scoring: ScoringSettings,
+    *,
+    slot: str | None = None,
+    sleeper: Any | None = None,
+) -> dict[str, Any]:
     """One compact, pre-scored row. Keep every field decision-relevant."""
     espn_proj = round(float(getattr(p, "projected_points", 0.0) or 0.0), 2)
     projected_breakdown = getattr(p, "projected_breakdown", None)
@@ -107,6 +149,21 @@ def _player_row(p: Any, scoring: ScoringSettings, *, slot: str | None = None) ->
         row["my_scoring_proj"] = ours.points
         if abs(ours.points - espn_proj) >= 0.5:
             row["proj_delta"] = round(ours.points - espn_proj, 2)
+
+    # The second opinion, and the number every ranking here actually uses.
+    espn_scored = row.get("my_scoring_proj", espn_proj)
+    sleeper_proj = _sleeper_projection(p, scoring, sleeper)
+    value, basis = consensus(espn_scored, sleeper_proj)
+    row["proj"] = value if value is not None else 0.0
+    if sleeper_proj is not None:
+        row["sleeper_proj"] = round(sleeper_proj, 2)
+        # Only when they genuinely split. Agreement is already carried by the
+        # consensus and would just be noise in a 5KB budget.
+        gap = disagreement(espn_scored, sleeper_proj)
+        if gap is not None:
+            row["disagree"] = gap
+    elif basis == "espn":
+        row["proj_basis"] = "espn_only"
 
     status = getattr(p, "injuryStatus", None)
     if status and status not in ("ACTIVE", "NORMAL"):
@@ -201,6 +258,18 @@ def get_matchup(
     except Exception as exc:  # noqa: BLE001 — preseason and bye weeks both land here
         return {"league": cfg.key, "week": week, "error": _no_roster_reason(lg, exc)}
 
+    # Both sides use the same consensus the slate ranks on, or the projected
+    # margin here would contradict the swaps recommended there.
+    sleeper = _safe_sleeper(settings.season, week)
+
+    def side(lineup: list[Any]) -> tuple[list[dict[str, Any]], float]:
+        starters = [p for p in lineup if getattr(p, "slot_position", "") not in ("BE", "IR")]
+        rows = [
+            _player_row(p, scoring, slot=getattr(p, "slot_position", None), sleeper=sleeper)
+            for p in starters
+        ]
+        return rows, round(sum(r["proj"] for r in rows), 2)
+
     for box in boxes:
         home_id = getattr(box.home_team, "team_id", None)
         away_id = getattr(box.away_team, "team_id", None)
@@ -210,14 +279,6 @@ def get_matchup(
         my_lineup = box.home_lineup if mine_home else box.away_lineup
         opp_lineup = box.away_lineup if mine_home else box.home_lineup
         opp_team = box.away_team if mine_home else box.home_team
-
-        def side(lineup: list[Any]) -> tuple[list[dict[str, Any]], float]:
-            starters = [p for p in lineup if getattr(p, "slot_position", "") not in ("BE", "IR")]
-            rows = [
-                _player_row(p, scoring, slot=getattr(p, "slot_position", None)) for p in starters
-            ]
-            total = round(sum(r.get("my_scoring_proj", r["espn_proj"]) for r in rows), 2)
-            return rows, total
 
         my_rows, my_total = side(my_lineup)
         opp_rows, opp_total = side(opp_lineup)
@@ -282,11 +343,12 @@ def get_start_sit_slate(
     except Exception as exc:  # noqa: BLE001
         return {"league": cfg.key, "week": week, "error": _no_roster_reason(lg, exc)}
 
-    def projection(p: Any) -> float:
-        breakdown = getattr(p, "projected_breakdown", None)
-        if breakdown:
-            return scoring.score(breakdown, getattr(p, "position", None)).points
-        return float(getattr(p, "projected_points", 0.0) or 0.0)
+    # Rank on the ESPN/Sleeper consensus. Two seasons of week-by-week replay put
+    # the mean at or near the top of everything measured, and ahead of either
+    # source alone in 2024 — docs/projections.md. Sleeper absent is not an
+    # error; the consensus simply becomes ESPN.
+    sleeper = _safe_sleeper(settings.season, week)
+    projection = _projector(scoring, sleeper)
 
     available = [p for p in roster if getattr(p, "slot_position", "") != "IR"]
     slots = lineup_slots.starting_slots
@@ -328,7 +390,7 @@ def get_start_sit_slate(
         if player is None:
             rows.append({"slot": slot, "recommended": None, "note": "no eligible player"})
             continue
-        row = _player_row(player, scoring, slot=slot)
+        row = _player_row(player, scoring, slot=slot, sleeper=sleeper)
         _enrich(row, player, env, usage, dvp)
         row["recommended"] = True
         rows.append(row)
@@ -337,10 +399,10 @@ def get_start_sit_slate(
     for p in available:
         if p.name in optimal_names or projection(p) <= 0:
             continue
-        row = _player_row(p, scoring)
+        row = _player_row(p, scoring, sleeper=sleeper)
         _enrich(row, p, env, usage, dvp)
         bench.append(row)
-    bench.sort(key=lambda r: -(r.get("my_scoring_proj", r["espn_proj"])))
+    bench.sort(key=lambda r: -r["proj"])
 
     return {
         "league": cfg.key,
@@ -352,6 +414,15 @@ def get_start_sit_slate(
         "optimal_lineup": rows,
         "bench": bench[:8],
         "environment_available": bool(env),
+        # Say which sources the ranking used. "espn" alone is a degraded but
+        # valid answer, and the reader should know which one they got.
+        # Coverage rather than a bare flag: Sleeper drops any player whose
+        # published total it cannot rebuild from their own stat line, so
+        # "espn+sleeper" can still mean some rows had one source. Saying
+        # 428/462 is honest where a boolean would not be.
+        "projection_basis": (
+            f"espn+sleeper ({sleeper.coverage})" if sleeper else "espn"
+        ),
     }
 
 
@@ -393,6 +464,26 @@ def _frames(season: int) -> dict[str, Any]:
         "snaps": store.snap_counts(),
         "stats_season": store.resolve_stats_season(),
     }
+
+
+def _safe_sleeper(season: int, week: int) -> Any | None:
+    """Sleeper's projections for the week, or None.
+
+    None means "no second opinion", and every caller treats that as a degraded
+    but valid state rather than an error — the consensus falls back to ESPN and
+    the response says so. Sleeper is an undocumented endpoint on somebody
+    else's infrastructure; a lineup must not depend on it being up.
+    """
+    store = get_store()
+    try:
+        week_data = (
+            store.sleeper_projections(season, week)
+            if store is not None
+            else fetch_week(season, week)
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return week_data or None
 
 
 def _safe_environment(season: int, week: int) -> dict[str, dict[str, Any]]:
@@ -501,7 +592,9 @@ def _enrich(
 # ---------------------------------------------------------------------------
 
 
-def get_game_environment(week: int | None = None, settings: Settings | None = None) -> dict[str, Any]:
+def get_game_environment(
+    week: int | None = None, settings: Settings | None = None
+) -> dict[str, Any]:
     """Vegas implied team totals, spreads and venue for every game in a week.
 
     The plan calls the implied team total the highest-signal single variable in
