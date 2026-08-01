@@ -1,0 +1,38 @@
+[project]
+name = "ff-assist"
+version = "0.1.0"
+description = "Fantasy football analyst — ESPN + nflverse data layer and MCP server"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Pinned exactly: the ESPN API is unofficial and its base URL moved in 2024.
+    # Bump this deliberately, never via a range. See README > Risks.
+    "espn-api==0.46.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.31",
+    "nflreadpy>=0.1.5",
+    "polars>=1.0",
+    "duckdb>=1.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Phase 1+: the MCP server itself. `uv sync --extra mcp`
+mcp = ["fastmcp>=3.4.5"]
+
+[dependency-groups]
+dev = ["ruff>=0.6", "pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ff_assist"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
