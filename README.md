@@ -93,10 +93,19 @@ pyproject.toml        deps; espn-api pinned exactly (unofficial API)
 src/ff_assist/
   config.py           .env loading, validation, masking
   espn_client.py      read-only espn-api wrapper + typed errors
+  scoring.py          league scoring rules + re-scoring a stat line
+  slots.py            lineup shape + exact optimal-lineup assignment
+  cache.py            SQLite TTL cache
+  tools.py            the three Phase 1 tools (plain functions)
+  server.py           FastMCP stdio wrapper around tools.py
 scripts/
-  verify_env.py       Phase 0 offline check
-  verify_leagues.py   Phase 0 ESPN smoke test
-data/cache/           local cache — gitignored
+  verify_env.py       offline .env check
+  verify_leagues.py   ESPN smoke test
+  dump_league_settings.py   anonymized league dump -> data/samples/
+  try_tool.py         call any tool from the terminal
+tests/                138 tests; `uv run pytest`
+data/samples/         anonymized league fixtures (committed)
+data/cache/           SQLite cache — gitignored
 ```
 
 ## Secrets policy
@@ -125,9 +134,64 @@ data/cache/           local cache — gitignored
 - **Pin `espn-api`.** The base URL moved to `lm-api-reads.fantasy.espn.com` in
   2024 and the API is undocumented. Bump the pin deliberately.
 
+
+## Phase 1 — the tools
+
+Three read-only tools, wrapped for MCP in `server.py`:
+
+| Tool | Returns |
+|---|---|
+| `list_leagues()` | Every league: scoring format, roster shape, current week, your team |
+| `get_matchup(league_key, week?)` | Your starters vs your opponent's, projected margin, rough win probability |
+| `get_start_sit_slate(league_key, week?)` | Your lineup, the optimal lineup in that league's scoring, and the swaps between |
+
+Iterate without restarting Claude:
+
+```bash
+uv run scripts/try_tool.py list_leagues
+uv run scripts/try_tool.py get_start_sit_slate gladiator
+uv run scripts/try_tool.py all          # every tool, every league, with sizes
+```
+
+`try_tool.py` prints each response's byte size and flags anything over 5KB —
+the plan's rule is that a response above that isn't aggregating enough.
+
+### Register with Claude desktop
+
+```bash
+uv sync --extra mcp
+which uv                                 # need the absolute path
+cat claude_desktop_config.example.json   # merge into your desktop config
+```
+
+Then restart Claude desktop. Set the tools to "always allow" — the server is
+read-only, and a scheduled task in Phase 4 will hang forever on an approval
+prompt nobody is awake to see.
+
+### Two things worth knowing
+
+**`espn-api`'s scoring parser is not multi-league safe.** It mutates a
+module-level dict, so with three leagues loaded the last one's scoring
+overwrites the others. It also treats a `pointsOverrides` value of `0.0` as
+absent (`override or points`), which misreports `gladiator`'s zeroed-out
+return yardage for D/ST. `scoring.py` parses `scoringItems` itself for both
+reasons. `tests/test_scoring.py` re-scores real 2025 stat lines and asserts an
+exact match against ESPN's own applied points.
+
+**`gladiator` scores yardage in buckets** — a point per 10 rushing yards, per
+20 passing — with no per-yard rule at all. That averages to the same rate as
+`inai`'s 0.1/yard but behaves differently at the margin: rushing yards 61
+through 69 are worth nothing. `ScoringSettings.yardage_scoring()` reports
+`per_yard` alongside a `granularity` so this stays visible, and Phase 2's
+floor/median/ceiling needs to respect it.
+
 ## Next
 
-- [ ] Fill in `.env`, get both verify scripts green
+- [x] Phase 0 — `.env`, cookies verified, all three leagues reading
+- [x] Phase 1 — scoring parser, lineup optimizer, cache, three tools, stdio server
+- [ ] Register the server in Claude desktop and exercise it in a real session
+- [ ] Re-run `try_tool.py all` after your late-August drafts — until then the
+      rosters are empty and the tools have nothing to chew on
 - [ ] `uvx nfl-mcp init` — nflverse/DuckDB MCP for exploratory work
 - [ ] Create the "Fantasy Football" Cowork project (memory + instructions persist there)
-- [ ] Phase 1: `list_leagues`, `get_matchup`, `get_start_sit_slate` + the scoring-settings parser
+- [ ] Phase 2 — DvP in each league's scoring, weather, implied team totals, usage trends

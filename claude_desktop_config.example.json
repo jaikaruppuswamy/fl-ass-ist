@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Merge the mcpServers entry below into your Claude desktop config:",
+    "  ~/Library/Application Support/Claude/claude_desktop_config.json",
+    "",
+    "Use an ABSOLUTE path to uv. The desktop app does not inherit your shell",
+    "PATH, so a bare \"uv\" usually fails with ENOENT. Find yours with:",
+    "  which uv          # e.g. /opt/homebrew/bin/uv or ~/.local/bin/uv",
+    "",
+    "Restart Claude desktop after editing. The server is read-only, so it is",
+    "safe to set its tools to 'always allow' — and worth doing before Phase 4,",
+    "since a scheduled task stalls forever on an approval prompt nobody sees.",
+    "",
+    "Logs go to stderr; the desktop app collects them under",
+    "  ~/Library/Logs/Claude/mcp-server-ff-assist.log"
+  ],
+  "mcpServers": {
+    "ff-assist": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Volumes/OWSD/jaikaruppuswamy/development/fl-ass-ist",
+        "--extra",
+        "mcp",
+        "python",
+        "-m",
+        "ff_assist.server"
+      ]
+    }
+  }
+}
