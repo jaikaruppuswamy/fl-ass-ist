@@ -96,6 +96,10 @@ src/ff_assist/
   scoring.py          league scoring rules + re-scoring a stat line
   slots.py            lineup shape + exact optimal-lineup assignment
   cache.py            SQLite TTL cache
+  game_env.py         Vegas implied team totals + the ESPN/nflverse team bridge
+  usage.py            usage trends + the ESPN/nflverse player-name join
+  dvp.py              defense-vs-position and rest-of-season SoS
+  weather.py          stadium venue table + Open-Meteo, gated on roof
   tools.py            the three Phase 1 tools (plain functions)
   server.py           FastMCP stdio wrapper around tools.py
 scripts/
@@ -103,6 +107,7 @@ scripts/
   verify_leagues.py   ESPN smoke test
   dump_league_settings.py   anonymized league dump -> data/samples/
   try_tool.py         call any tool from the terminal
+  check_weather.py    validate stadium coords against live Open-Meteo
 tests/                138 tests; `uv run pytest`
 data/samples/         anonymized league fixtures (committed)
 data/cache/           SQLite cache — gitignored
@@ -144,6 +149,10 @@ Three read-only tools, wrapped for MCP in `server.py`:
 | `list_leagues()` | Every league: scoring format, roster shape, current week, your team |
 | `get_matchup(league_key, week?)` | Your starters vs your opponent's, projected margin, rough win probability |
 | `get_start_sit_slate(league_key, week?)` | Your lineup, the optimal lineup in that league's scoring, and the swaps between |
+| `get_game_environment(week?)` | Implied team totals, spreads, wind/precip per game |
+| `get_player_trend(player, weeks?)` | Snap share, targets, target share, air yards share, carries + direction |
+| `get_defense_vs_position(league_key, window?, position?)` | DvP in that league's scoring; rank 1 = softest |
+| `get_ros_schedule_strength(league_key, from_week?)` | Remaining schedule difficulty, playoff weeks weighted 2x |
 
 Iterate without restarting Claude:
 
@@ -194,4 +203,6 @@ floor/median/ceiling needs to respect it.
       rosters are empty and the tools have nothing to chew on
 - [ ] `uvx nfl-mcp init` — nflverse/DuckDB MCP for exploratory work
 - [ ] Create the "Fantasy Football" Cowork project (memory + instructions persist there)
-- [ ] Phase 2 — DvP in each league's scoring, weather, implied team totals, usage trends
+- [x] Phase 2 — implied totals, usage trends, DvP, rest-of-season SoS, weather
+- [ ] Run `uv run scripts/check_weather.py` to validate the stadium coordinates
+- [ ] Phase 3 — HTTP transport, bearer auth, deploy, register as a Custom Connector

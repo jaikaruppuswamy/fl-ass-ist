@@ -19,10 +19,21 @@ from typing import Any
 from .cache import Cache, key_for
 from .config import LeagueConfig, Settings, get_settings
 from .espn_client import ESPNError, get_league, my_team
+from .dvp import defense_vs_position, dvp_for_team, ros_schedule_strength
+from .game_env import load_week_environment, team_environment_map
 from .scoring import ScoringSettings
 from .slots import LineupSlots, optimize_lineup
+from .usage import player_usage, usage_for_roster
 
-__all__ = ["list_leagues", "get_matchup", "get_start_sit_slate"]
+__all__ = [
+    "list_leagues",
+    "get_matchup",
+    "get_start_sit_slate",
+    "get_game_environment",
+    "get_player_trend",
+    "get_defense_vs_position",
+    "get_ros_schedule_strength",
+]
 
 # Weekly fantasy team scores have a standard deviation around 25-30 points, so
 # a margin (the difference of two) sits near 40. Used only to turn a projected
@@ -279,20 +290,28 @@ def get_start_sit_slate(
         else None
     )
 
+    # Phase 2 columns. Both degrade to absent rather than failing the call:
+    # a slate with no Vegas line is still worth having.
+    env = _safe_environment(settings.season, week)
+    usage = _safe_usage(available, settings.season)
+
     rows: list[dict[str, Any]] = []
     for slot, player in zip(slots, optimal):
         if player is None:
             rows.append({"slot": slot, "recommended": None, "note": "no eligible player"})
             continue
         row = _player_row(player, scoring, slot=slot)
+        _enrich(row, player, env, usage)
         row["recommended"] = True
         rows.append(row)
 
-    bench = [
-        _player_row(p, scoring)
-        for p in available
-        if p.name not in optimal_names and projection(p) > 0
-    ]
+    bench = []
+    for p in available:
+        if p.name in optimal_names or projection(p) <= 0:
+            continue
+        row = _player_row(p, scoring)
+        _enrich(row, p, env, usage)
+        bench.append(row)
     bench.sort(key=lambda r: -(r.get("my_scoring_proj", r["espn_proj"])))
 
     return {
@@ -304,4 +323,294 @@ def get_start_sit_slate(
         "changes": changes,
         "optimal_lineup": rows,
         "bench": bench[:8],
+        "environment_available": bool(env),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_weather(game: Any) -> dict[str, Any] | None:
+    """Forecast for one game, or None when it is played under a roof.
+
+    Only reports what is worth acting on — a calm, dry forecast returns {} and
+    the caller omits the field entirely rather than padding every row.
+    """
+    from .weather import forecast_for_game
+
+    kickoff = f"{game.gameday}T{game.gametime}" if game.gameday and game.gametime else None
+    out = forecast_for_game(game.stadium, game.roof, kickoff)
+    if out is None:
+        return None
+    if "error" in out or "unknown_venue" in out:
+        return {}
+    keep = {k: v for k, v in out.items() if k in ("wind_mph", "precip_pct", "verdict", "caveat")}
+    if not out.get("verdict") and (out.get("precip_pct") or 0) < 40:
+        return {}
+    return keep
+
+
+def _safe_environment(season: int, week: int) -> dict[str, dict[str, Any]]:
+    """Vegas environment for the week, or {} if nflverse is unreachable or the
+    books have not priced this far ahead (they run about three weeks out)."""
+    try:
+        return team_environment_map(season, week)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _safe_usage(players: list[Any], season: int) -> dict[str, dict[str, Any]]:
+    """Recent usage per player. Falls back to last season when the current one
+    has not started — in September, last year's target share is the only usage
+    signal that exists, and saying nothing would be worse."""
+    names = [
+        (p.name, getattr(p, "position", None), getattr(p, "proTeam", None)) for p in players
+    ]
+    for candidate in (season, season - 1):
+        try:
+            out = usage_for_roster(names, candidate, weeks=4)
+        except Exception:  # noqa: BLE001
+            # A season that has not started 404s. That is "no data yet", not
+            # "unreachable" — keep going and try the prior season.
+            continue
+        if any("error" not in v for v in out.values()):
+            if candidate != season:
+                for v in out.values():
+                    v["season"] = candidate
+                    v["stale"] = True
+            return out
+    return {}
+
+
+def _enrich(
+    row: dict[str, Any],
+    player: Any,
+    env: dict[str, dict[str, Any]],
+    usage: dict[str, dict[str, Any]],
+) -> None:
+    """Attach game environment and usage trend to a player row, in place."""
+    team_env = env.get(getattr(player, "proTeam", "") or "")
+    if team_env:
+        if team_env.get("implied_total") is not None:
+            row["implied_total"] = team_env["implied_total"]
+            row["spread"] = team_env["spread"]
+        if team_env.get("weather_relevant") is False:
+            row["indoors"] = True
+
+    u = usage.get(row["name"])
+    if u and "error" not in u:
+        if u.get("trend") and u["trend"] != "insufficient_data":
+            row["usage_trend"] = u["trend"]
+        if u.get("last"):
+            row["usage"] = u["last"]
+        if u.get("stale"):
+            row["usage_season"] = u.get("season")
+
+
+# ---------------------------------------------------------------------------
+# 4. get_game_environment
+# ---------------------------------------------------------------------------
+
+
+def get_game_environment(week: int | None = None, settings: Settings | None = None) -> dict[str, Any]:
+    """Vegas implied team totals, spreads and venue for every game in a week.
+
+    The plan calls the implied team total the highest-signal single variable in
+    the system. Note it is a near-term signal: books price roughly three weeks
+    ahead, so late-season weeks come back unpriced rather than wrong.
+    """
+    settings = settings or get_settings()
+    week = week or 1
+    try:
+        games = load_week_environment(settings.season, week)
+    except Exception as exc:  # noqa: BLE001
+        return {"week": week, "error": f"nflverse unreachable: {exc}"}
+
+    if not games:
+        return {"week": week, "error": f"no games found for {settings.season} week {week}"}
+
+    rows = []
+    for g in games:
+        row: dict[str, Any] = {
+            "matchup": f"{g.away}@{g.home}",
+            "total": g.total_line,
+            "spread_home": g.spread_line,
+            "implied_home": g.implied_home,
+            "implied_away": g.implied_away,
+        }
+        wx = _safe_weather(g)
+        if wx is None:
+            row["indoors"] = True
+        elif wx:
+            row["weather"] = wx
+        rows.append(row)
+
+    priced = [g for g in games if g.implied_home is not None]
+    return {
+        "season": settings.season,
+        "week": week,
+        "games": rows,
+        "priced": f"{len(priced)}/{len(games)}",
+        "note": (
+            "Odds are posted about three weeks ahead; unpriced games show null "
+            "totals rather than estimates."
+        )
+        if len(priced) < len(games)
+        else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 5. get_player_trend
+# ---------------------------------------------------------------------------
+
+
+def get_player_trend(
+    player: str, weeks: int = 6, settings: Settings | None = None
+) -> dict[str, Any]:
+    """Week-by-week usage for one player: snaps, targets, target share, air
+    yards share, carries — and the direction of the headline metric.
+
+    Usage leads results, so a rising target share is information ESPN's
+    projection does not contain.
+    """
+    settings = settings or get_settings()
+    problems: list[str] = []
+    for season in (settings.season, settings.season - 1):
+        try:
+            out = player_usage(player, season, weeks=weeks)
+        except Exception as exc:  # noqa: BLE001
+            # nflverse 404s a season that has not started yet. Falling through
+            # to last season is the whole point — in September that is the only
+            # usage data that exists.
+            problems.append(f"{season}: {type(exc).__name__}")
+            continue
+        if "error" not in out:
+            if season != settings.season:
+                out["note"] = f"{settings.season} has no games yet; showing {season} usage."
+            return out
+        problems.append(f"{season}: {out['error']}")
+    return {"player": player, "error": "; ".join(problems)}
+
+
+# ---------------------------------------------------------------------------
+# 6. get_defense_vs_position
+# ---------------------------------------------------------------------------
+
+
+def get_defense_vs_position(
+    league_key: str,
+    window: int = 4,
+    position: str | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Points allowed per game to each position, by defence, in one league's
+    own scoring.
+
+    Vendors publish this in generic PPR, which is the wrong denominator for a
+    league that scores yardage in buckets or a half point per reception — the
+    ranking genuinely reorders. Rank 1 is the softest matchup.
+
+    Args:
+        league_key: which league's scoring to express the table in
+        window: rolling window in weeks; 0 for season-long
+        position: limit to one of QB/RB/WR/TE
+    """
+    settings, cfg = _resolve(league_key, settings)
+    try:
+        lg = get_league(cfg, settings=settings)
+        scoring = ScoringSettings.from_raw(
+            lg.espn_request.get_league().get("settings", {}), cfg.key
+        )
+    except ESPNError as exc:
+        return {"league": cfg.key, "error": str(exc).splitlines()[0]}
+
+    positions = (position,) if position else ("QB", "RB", "WR", "TE")
+    for season in (settings.season, settings.season - 1):
+        try:
+            out = defense_vs_position(
+                scoring, season, window=window or None, positions=positions
+            )
+        except Exception as exc:  # noqa: BLE001
+            continue
+        if "error" not in out:
+            out["league"] = cfg.key
+            if season != settings.season:
+                out["note"] = f"{settings.season} has no games yet; showing {season}."
+            return out
+    return {"league": cfg.key, "error": "no nflverse data available"}
+
+
+# ---------------------------------------------------------------------------
+# 7. get_ros_schedule_strength
+# ---------------------------------------------------------------------------
+
+
+def get_ros_schedule_strength(
+    league_key: str, from_week: int | None = None, settings: Settings | None = None
+) -> dict[str, Any]:
+    """Remaining-schedule difficulty for every player on your roster, in this
+    league's scoring, with the fantasy playoff weeks (15-17) weighted double.
+
+    A player with an easy October and a brutal December is worse than his
+    season-long matchup average suggests, and that only shows up if the
+    playoff weeks are weighted.
+    """
+    settings, cfg = _resolve(league_key, settings)
+    try:
+        lg = get_league(cfg, settings=settings)
+        raw = lg.espn_request.get_league().get("settings", {})
+        scoring = ScoringSettings.from_raw(raw, cfg.key)
+    except ESPNError as exc:
+        return {"league": cfg.key, "error": str(exc).splitlines()[0]}
+
+    if cfg.team_id is None:
+        return {"league": cfg.key, "error": f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"}
+
+    team = my_team(lg, cfg)
+    if team is None or not getattr(team, "roster", None):
+        return {
+            "league": cfg.key,
+            "error": "roster is empty — nothing to schedule until the draft",
+        }
+
+    from .game_env import to_nflverse_team
+
+    entries = [
+        (p.name, to_nflverse_team(getattr(p, "proTeam", None)), getattr(p, "position", None))
+        for p in team.roster
+        if getattr(p, "position", None) in ("QB", "RB", "WR", "TE")
+    ]
+
+    dvp_season = settings.season
+    dvp = {}
+    for season in (settings.season, settings.season - 1):
+        try:
+            dvp = defense_vs_position(scoring, season, window=None)
+        except Exception:  # noqa: BLE001
+            continue
+        if "error" not in dvp:
+            dvp_season = season
+            break
+    if not dvp or "error" in dvp:
+        return {"league": cfg.key, "error": "no nflverse data for defensive strength"}
+
+    week = from_week or max(1, lg.current_week or 1)
+    try:
+        rows = ros_schedule_strength(entries, dvp, settings.season, from_week=week)
+    except Exception as exc:  # noqa: BLE001
+        return {"league": cfg.key, "error": f"schedule unavailable: {exc}"}
+
+    return {
+        "league": cfg.key,
+        "from_week": week,
+        "scoring": scoring.format_label(),
+        "dvp_basis_season": dvp_season,
+        "players": rows,
+        "note": (
+            "ros_pts_allowed is what the remaining opponents give up to that "
+            "position; higher is an easier schedule. Weeks 15-17 count double."
+        ),
     }

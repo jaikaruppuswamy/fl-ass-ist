@@ -71,6 +71,61 @@ def build_server() -> Any:
         """
         return tools.get_start_sit_slate(league_key, week)
 
+    @mcp.tool
+    def get_game_environment(week: int | None = None) -> dict[str, Any]:
+        """Vegas implied team totals, spreads and venue for every NFL game in a
+        week. Implied team total is the single highest-signal input for a
+        player's expected volume. Books price about three weeks ahead, so
+        later weeks come back unpriced rather than estimated.
+
+        Args:
+            week: NFL week; defaults to week 1
+        """
+        return tools.get_game_environment(week)
+
+    @mcp.tool
+    def get_player_trend(player: str, weeks: int = 6) -> dict[str, Any]:
+        """Week-by-week usage for one player — snap share, targets, target
+        share, air yards share, carries — plus the direction of travel.
+        Usage leads box-score results, so this is information ESPN's
+        projection does not contain.
+
+        Args:
+            player: player name as it appears on your roster
+            weeks: how many recent weeks to return (default 6)
+        """
+        return tools.get_player_trend(player, weeks)
+
+    @mcp.tool
+    def get_defense_vs_position(
+        league_key: str, window: int = 4, position: str | None = None
+    ) -> dict[str, Any]:
+        """Points allowed per game to each position by each NFL defence,
+        expressed in one league's own scoring rather than generic PPR — the
+        ranking genuinely differs between scoring systems. Rank 1 is the
+        softest matchup.
+
+        Args:
+            league_key: whose scoring to express the table in
+            window: rolling window in weeks; 0 for season-long
+            position: optionally limit to QB, RB, WR or TE
+        """
+        return tools.get_defense_vs_position(league_key, window, position)
+
+    @mcp.tool
+    def get_ros_schedule_strength(
+        league_key: str, from_week: int | None = None
+    ) -> dict[str, Any]:
+        """Rest-of-season schedule difficulty for every player on your roster,
+        in this league's scoring, with fantasy playoff weeks (15-17) weighted
+        double. Higher ros_pts_allowed means an easier remaining schedule.
+
+        Args:
+            league_key: short league handle from list_leagues
+            from_week: start week; defaults to the league's current week
+        """
+        return tools.get_ros_schedule_strength(league_key, from_week)
+
     return mcp
 
 
