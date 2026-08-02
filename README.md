@@ -173,11 +173,32 @@ The weekly rhythm, as five scheduled tasks:
 | Thu 4:00pm | TNF lock check — anyone in the Thursday game |
 | Sun 9:30am | Pre-game brief — final lineups across every league |
 | Sun 11:45am | Inactives sweep — 15 minutes to lock, late scratches only |
-| Tue 9:00am | Postmortem — what was wrong, logged for calibration |
+| Sat | `calibrate.py --record N` — freeze the week's recommendations |
+| Tue 9:00am | Postmortem — `calibrate.py --score N`, then read the log |
 
 Create them in Cowork with the prompts you want; the Tuesday brief should call
 `health` first so an expired cookie surfaces on a Tuesday rather than on a
 Sunday morning.
+
+### Does it actually work?
+
+A backtest answers "would this have helped last season". Only the calibration
+log answers "is it helping now":
+
+```bash
+uv run scripts/calibrate.py --record 3   # Saturday, before kickoff
+uv run scripts/calibrate.py --score 3    # Tuesday, after the games
+uv run scripts/calibrate.py --report     # any time
+```
+
+Two steps rather than one, because the recommendations are made in a
+conversation that nothing persists, and ESPN overwrites its projections with
+finals — so "what did we say" is unrecoverable after kickoff unless it was
+written down first. `--score` refuses to run on a week with no frozen record
+rather than reconstructing one.
+
+The report will tell you it has nothing to say for the first month or so, and
+it means it: with a dozen decisions the 95% band is ±28 percentage points.
 
 **Cron caveat:** scheduled tasks run on UTC. If your local time observes DST,
 the tasks drift by an hour when the clocks change, and the inactives sweep is
@@ -213,6 +234,7 @@ scripts/
   backtest_2025.py         replay last season; does this actually help?
   projection_bakeoff.py    score rival projections against each other
   snapshot_projections.py  freeze a week's projections before kickoff
+  calibrate.py             freeze recommendations, then score them
 docs/
   projections.md           what the bake-off found, and why not to buy a feed
 tests/                     ~370 tests
