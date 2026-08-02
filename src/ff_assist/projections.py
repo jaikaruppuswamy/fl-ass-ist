@@ -31,6 +31,30 @@ unmapped keys are collected and reported rather than dropped.
 number when Sleeper is unreachable, and the consensus falls back to whichever
 source it does have. A missing second opinion should cost you the second
 opinion, not the lineup.
+
+Known limitation, bounded and deliberate
+----------------------------------------
+
+**Quarterbacks get ESPN only.** Sleeper's published `pts_ppr` for a QB is about
+3-4 points higher than we can rebuild from the stat line it returns alongside
+it — every quarterback, no other position. Those players fail the reconstruction
+check and fall back to ESPN, which is the designed behaviour rather than an
+outage.
+
+It is not for want of looking. Twelve rounds of diagnosis, four purpose-built
+tools and a search over every plausible price for every returned stat produced
+no rule that closes the gap: the best fit is an interception worth *plus* two
+points, and it only looks tidy because projected interceptions sit near 0.96 for
+every starter, so 0.96 x 4 lands on the gap by arithmetic accident. Nothing else
+lands on a value any scoring format uses.
+
+The likely explanation is terminal by construction: the missing category is not
+in the payload. Reconstructing a total from its components cannot close if a
+component is never returned, no matter how the remaining columns are reweighted.
+
+The cost is about 0.07 bench points per lineup per week, roughly a hundredth of
+a win a season. `check_external.py --sleeper --diagnose` re-tests it in seconds
+if Sleeper ever starts returning the missing field.
 """
 
 from __future__ import annotations
@@ -53,6 +77,9 @@ __all__ = [
     "consensus",
     "verify_crosswalk",
     "infer_scoring",
+    "contrast_rejected",
+    "propose_fixes",
+    "explain_player",
     "RECONSTRUCTION_TOLERANCE",
 ]
 
@@ -86,24 +113,41 @@ SLEEPER_TO_NFLVERSE: dict[str, str] = {
     "fum_lost": "rushing_fumbles_lost",
 }
 
-#: Keys Sleeper returns that we knowingly ignore, so they never show up as
-#: "unmapped" and send someone hunting for a bug. These are either summary
-#: points totals (which we deliberately recompute), rate stats, or categories
-#: no league here scores.
-_IGNORED_KEYS = frozenset(
+#: Keys that are structurally not scoring categories at all: draft positions,
+#: ranks, rate stats, snap counts, and the points totals we deliberately
+#: recompute. Nothing here could ever be worth points, so it is excluded from
+#: both the unmapped warning and the diagnostic regression.
+_NON_SCORING_KEYS = frozenset(
     {
         "pts_ppr", "pts_half_ppr", "pts_std", "pts_ppr_dk", "pts_ppr_fd",
         "pts_std_dk", "pts_std_fd", "pts_half_ppr_dk", "pts_half_ppr_fd",
         "gp", "gms_active", "gs", "off_snp", "tm_off_snp", "cmp_pct",
         "pass_rtg", "pass_ypa", "pass_ypc", "rush_ypa", "rec_ypr", "rec_ypt",
-        "pass_fd", "rush_fd", "rec_fd", "fum", "pass_sack", "pass_sack_yds",
-        "bonus_rec_te", "bonus_rush_yd_100", "bonus_rec_yd_100",
-        "bonus_pass_yd_300", "bonus_rush_yd_200", "bonus_rec_yd_200",
-        "bonus_pass_yd_400", "bonus_pass_cmp_25", "bonus_rush_att_20",
-        "bonus_rec_rb", "bonus_rec_wr", "rush_rec_yd", "anytime_tds",
+        "pass_sack_yds", "rush_rec_yd", "anytime_tds",
         "st_snp", "def_snp", "tm_def_snp", "tm_st_snp",
     }
 )
+
+#: Real stat categories that standard full PPR is *believed* not to pay for.
+#: They are suppressed from the unmapped warning to keep it readable — but they
+#: stay in the diagnostic regression, deliberately.
+#:
+#: The distinction matters. An earlier version lumped these in with the
+#: structural noise above and excluded them from the fit too, which made the
+#: diagnostic incapable of discovering that one of them *is* scored: ignored
+#: because assumed unscored, assumption unfalsifiable because ignored. A tool
+#: built to challenge an assumption must not inherit it.
+_ASSUMED_UNSCORED = frozenset(
+    {
+        "pass_fd", "rush_fd", "rec_fd", "fum", "pass_sack",
+        "bonus_rec_te", "bonus_rush_yd_100", "bonus_rec_yd_100",
+        "bonus_pass_yd_300", "bonus_rush_yd_200", "bonus_rec_yd_200",
+        "bonus_pass_yd_400", "bonus_pass_cmp_25", "bonus_rush_att_20",
+        "bonus_rec_rb", "bonus_rec_wr",
+    }
+)
+
+_IGNORED_KEYS = _NON_SCORING_KEYS | _ASSUMED_UNSCORED
 
 #: How far apart ESPN and Sleeper have to be before the disagreement is worth a
 #: sentence. Three points is roughly where a flex decision starts to turn, and
@@ -159,6 +203,8 @@ class SleeperWeek:
     ppr: dict[str, float] = field(default_factory=dict)
     #: normalized name -> the raw stat dict, kept for infer_scoring()
     raw: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: normalized name -> position, so a failure can be described by who it hit
+    positions: dict[str, str] = field(default_factory=dict)
     #: Sleeper stat keys we did not recognise **and which carried a non-zero
     #: value**. A key present at zero contributes nothing whether we map it or
     #: not, and flagging those trains the eye to ignore the warning.
@@ -180,6 +226,26 @@ class SleeperWeek:
         """Players we trust, over players Sleeper returned."""
         total = len(self.lines) + len(self.rejected)
         return f"{len(self.lines)}/{total}"
+
+    def rejected_by_position(self) -> dict[str, tuple[int, int]]:
+        """position -> (rejected, total). Names the shape of a failure.
+
+        When every rejection lands on one position the diagnosis is a sentence,
+        not a table — and it took several rounds of statistics to notice that
+        the six "candidate causes" in the contrast output were six passing
+        stats, i.e. one position. Saying it directly saves the next reader that
+        detour.
+        """
+        counts: dict[str, list[int]] = {}
+        for name in list(self.lines) + list(self.rejected):
+            position = self.positions.get(name)
+            if not position:
+                continue
+            row = counts.setdefault(position, [0, 0])
+            row[1] += 1
+            if name in self.rejected:
+                row[0] += 1
+        return {k: (v[0], v[1]) for k, v in sorted(counts.items())}
 
 
 def fetch_week(
@@ -236,6 +302,11 @@ def fetch_week(
         if line:
             out.lines[key] = line
             out.raw[key] = {k: float(v) for k, v in stats.items() if isinstance(v, int | float)}
+            position = player.get("position") or next(
+                iter(player.get("fantasy_positions") or []), None
+            )
+            if position:
+                out.positions[key] = position
         if stats.get("pts_ppr") is not None:
             out.ppr[key] = float(stats["pts_ppr"])
 
@@ -378,53 +449,159 @@ def verify_crosswalk(week: SleeperWeek) -> dict[str, Any]:
 
 
 def infer_scoring(
-    week: SleeperWeek, *, ridge: float = 1e-6, min_players: int = 50
+    week: SleeperWeek, *, ridge: float = 1.0, min_players: int = 50
 ) -> dict[str, Any]:
-    """Solve for the scoring rule Sleeper's own `pts_ppr` actually implies.
+    """Which stat key are we failing to map? Solved, not guessed.
 
-    Guessing which stat key we failed to map is a game that takes several
-    rounds and can be skipped entirely. Sleeper hands us, for every player, a
-    vector of projected stats and the points total it derives from them. That
-    is a linear system: least squares over the raw stat keys recovers the
-    per-unit value of each one.
+    Sleeper hands us a stat vector and the points total it derives from them,
+    for every player. Subtract what standard PPR says those stats are worth and
+    the leftover is, by construction, the contribution of whatever we did not
+    map. Regressing that residual on the unmapped keys names the category.
 
-    A key with a substantial fitted coefficient that is missing from
-    :data:`SLEEPER_TO_NFLVERSE` is exactly the bug. A key we *do* map whose
-    fitted coefficient differs from what :data:`_STANDARD_PPR_RAW` assumes is a
-    different bug — the reference ruleset, not the crosswalk — and the first
-    version of the verifier could not tell those two apart.
+    **Only the residual is fitted, and only against the unmapped keys.** A first
+    version solved for all scoring coefficients at once and produced nonsense —
+    interceptions worth *plus* two points, passing yards at six times their real
+    rate — because a projected stat line is close to rank-deficient. Yards,
+    attempts, completions, incompletions, first downs and sacks are one latent
+    "how much will he play" variable wearing six hats, and least squares splits
+    a real effect arbitrarily across columns that move together. Holding the
+    known coefficients fixed removes most of that; there is nothing to learn
+    about the price of a receiving yard.
 
-    Pure Python on purpose: normal equations with a ridge term, twenty-odd
-    unknowns and several hundred rows. numpy is not a dependency of this
-    project and is not worth becoming one for this.
+    A **split-half stability** check follows: the fit is repeated on two halves
+    and a coefficient is only reported if both agree on sign and rough size.
+
+    **That check is weaker than it sounds, and this docstring used to oversell
+    it.** Split-half measures *sampling* variability. Collinearity bias is not
+    sampling noise — correlated columns are correlated in both halves
+    identically, so both halves make the same wrong attribution, agree with
+    each other, and the coefficient is reported as stable. On real data this
+    function still returned a fumble worth +1.1 points and a 40-yard run worth
+    minus half a point, and the stability check passed them.
+
+    So treat the output as a list of *suspects*, never as measurements. The
+    tools that actually decide are :func:`contrast_rejected`, which estimates
+    nothing, and :func:`propose_fixes`, which tests a specific hypothesis
+    against a countable outcome. Prefer both to this.
     """
-    rows = [(week.raw[n], week.ppr[n]) for n in week.raw if n in week.ppr]
-    rows += [
-        (week.raw[n], week.ppr[n]) for n in week.rejected if n in week.raw and n in week.ppr
-    ]
+    standard = ScoringSettings.from_raw(_STANDARD_PPR_RAW, "standard-ppr")
+
+    # Every player exactly once. `raw` already holds the rejected ones — an
+    # earlier version added them again from `rejected` and reported 497 rows
+    # for a 462-player week.
+    rows: list[tuple[dict[str, float], float]] = []
+    for name, stats in week.raw.items():
+        total = week.ppr.get(name)
+        if total is None:
+            continue
+        line = week.lines.get(name)
+        if line is None:
+            line = {
+                col: stats[k]
+                for k, col in SLEEPER_TO_NFLVERSE.items()
+                if stats.get(k)
+            }
+        ours = standard.score(to_espn_stat_line(line)).points
+        rows.append((stats, total - ours))
+
     if len(rows) < min_players:
         return {"error": f"only {len(rows)} players with both stats and a total"}
 
-    # Candidate regressors: every numeric key that ever carries a value, minus
-    # the points totals themselves (which would fit with coefficient 1 and
-    # explain everything while teaching nothing).
-    excluded = {k for k in _IGNORED_KEYS if k.startswith(("pts_", "adp_"))}
     keys = sorted(
-        {k for stats, _ in rows for k, v in stats.items() if v and k not in excluded}
+        {
+            k
+            for stats, _ in rows
+            for k, v in stats.items()
+            if v and k not in SLEEPER_TO_NFLVERSE and not _is_noise_key(k)
+        }
     )
     if not keys:
-        return {"error": "no candidate stat keys"}
+        return {"error": "no unmapped stat keys carry a value"}
 
+    full = _ridge_fit(rows, keys, ridge)
+    if full is None:
+        return {"error": "singular system"}
+
+    half_a = _ridge_fit(rows[0::2], keys, ridge)
+    half_b = _ridge_fit(rows[1::2], keys, ridge)
+
+    residuals = [r for _s, r in rows]
+    mean_r = sum(residuals) / len(residuals)
+    ss_tot = sum((r - mean_r) ** 2 for r in residuals)
+    ss_res = sum(
+        (r - sum(full[k] * (stats.get(k) or 0.0) for k in keys)) ** 2
+        for stats, r in rows
+    )
+
+    stable: dict[str, float] = {}
+    unstable: list[str] = []
+    for k in keys:
+        coefficient = full[k]
+        if abs(coefficient) < 0.01:
+            continue
+        a, b = (half_a or {}).get(k), (half_b or {}).get(k)
+        if a is None or b is None or a * b <= 0 or _disagree(a, b):
+            unstable.append(k)
+        else:
+            stable[k] = round(coefficient, 3)
+
+    return {
+        "players": len(rows),
+        "mean_residual": round(mean_r, 3),
+        "variance_explained": round(1 - ss_res / ss_tot, 3) if ss_tot else None,
+        "unmapped_but_scored": dict(
+            sorted(stable.items(), key=lambda kv: -abs(kv[1]))
+        ),
+        "unstable": sorted(unstable),
+    }
+
+
+def _disagree(a: float, b: float) -> bool:
+    """True when two half-sample estimates are too far apart to report."""
+    lo, hi = sorted((abs(a), abs(b)))
+    return hi > max(2.0 * lo, lo + 0.05)
+
+
+def _is_noise_key(key: str) -> bool:
+    """Structurally incapable of being a scoring category.
+
+    Draft positions, ranks, rate stats and points totals. ADP values run into
+    the hundreds and would dominate a least-squares fit numerically while
+    meaning nothing; leaving them in was a real bug.
+
+    Note this checks :data:`_NON_SCORING_KEYS`, **not** ``_IGNORED_KEYS``.
+    Categories we merely *assume* are unscored stay in the regression so the
+    assumption can be caught out.
+    """
+    return (
+        key in _NON_SCORING_KEYS
+        or "adp" in key
+        or key.startswith(("pts_", "rank_", "pos_rank"))
+    )
+
+
+def _ridge_fit(
+    rows: list[tuple[dict[str, float], float]], keys: list[str], ridge: float
+) -> dict[str, float] | None:
+    """Ridge regression on standardised columns, returned in original units."""
     n = len(keys)
-    # Normal equations: (XtX + ridge*I) beta = Xty
+    if not rows:
+        return None
+
+    scale = []
+    for k in keys:
+        values = [abs(stats.get(k) or 0.0) for stats, _ in rows]
+        peak = max(values) or 1.0
+        scale.append(peak)
+
     xtx = [[0.0] * n for _ in range(n)]
     xty = [0.0] * n
-    for stats, total in rows:
-        vec = [float(stats.get(k) or 0.0) for k in keys]
+    for stats, target in rows:
+        vec = [(stats.get(keys[i]) or 0.0) / scale[i] for i in range(n)]
         for i in range(n):
             if not vec[i]:
                 continue
-            xty[i] += vec[i] * total
+            xty[i] += vec[i] * target
             for j in range(n):
                 if vec[j]:
                     xtx[i][j] += vec[i] * vec[j]
@@ -433,33 +610,8 @@ def infer_scoring(
 
     beta = _solve(xtx, xty)
     if beta is None:
-        return {"error": "singular system — stat keys are collinear"}
-
-    fitted = {k: round(b, 4) for k, b in zip(keys, beta, strict=True)}
-
-    # What the current code believes, for comparison.
-    assumed = {
-        "pass_yd": 0.04, "pass_td": 4.0, "pass_int": -2.0, "pass_2pt": 2.0,
-        "rush_yd": 0.1, "rush_td": 6.0, "rush_2pt": 2.0,
-        "rec": 1.0, "rec_yd": 0.1, "rec_td": 6.0, "rec_2pt": 2.0,
-        "fum_lost": -2.0,
-    }
-
-    missing = {
-        k: v for k, v in fitted.items()
-        if k not in SLEEPER_TO_NFLVERSE and abs(v) >= 0.01
-    }
-    wrong = {
-        k: {"assumed": assumed[k], "fitted": v}
-        for k, v in fitted.items()
-        if k in assumed and abs(v - assumed[k]) > max(0.02, abs(assumed[k]) * 0.1)
-    }
-    return {
-        "players": len(rows),
-        "fitted": fitted,
-        "unmapped_but_scored": missing,
-        "mapped_but_mispriced": wrong,
-    }
+        return None
+    return {keys[i]: beta[i] / scale[i] for i in range(n)}
 
 
 def _solve(a: list[list[float]], b: list[float]) -> list[float] | None:
@@ -480,3 +632,346 @@ def _solve(a: list[list[float]], b: list[float]) -> list[float] | None:
                 for c in range(col, n + 1):
                     m[r][c] -= factor * m[col][c]
     return [m[i][n] / m[i][i] for i in range(n)]
+
+
+#: What :data:`_STANDARD_PPR_RAW` believes each Sleeper key is worth. Kept
+#: separately from the ESPN-stat-id form because the fix search needs to reason
+#: in Sleeper's own vocabulary.
+_ASSUMED_PRICE: dict[str, float] = {
+    "pass_yd": 0.04, "pass_td": 4.0, "pass_int": -2.0, "pass_2pt": 2.0,
+    "rush_yd": 0.1, "rush_td": 6.0, "rush_2pt": 2.0,
+    "rec": 1.0, "rec_yd": 0.1, "rec_td": 6.0, "rec_2pt": 2.0,
+    "fum_lost": -2.0,
+}
+
+#: Prices worth trying. Every value a real fantasy format actually uses, plus
+#: zero for "this category is not scored at all".
+_CANDIDATE_PRICES = (
+    0.0, 0.025, 0.04, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
+    -0.25, -0.5, -1.0, -2.0, -3.0,
+)
+
+
+def contrast_rejected(week: SleeperWeek, *, top: int = 10) -> list[dict[str, Any]]:
+    """What do the players we cannot reproduce have that the others do not?
+
+    A regression estimates coefficients and can be fooled by correlated
+    columns. This does not estimate anything: it asks which stat keys are
+    *present* in the failures and absent from the successes. A key that appears
+    in every broken player and almost no working one is the culprit, and no
+    amount of collinearity changes that.
+
+    Returned rows carry ``implied`` — the residual divided by the key's value,
+    which is what its price would have to be if that key alone explained the
+    gap. Read it as a hypothesis to test with :func:`propose_fixes`, not as a
+    measurement.
+    """
+    kept = [n for n in week.lines if n in week.raw]
+    broken = [n for n in week.rejected if n in week.raw]
+    if not broken or not kept:
+        return []
+
+    keys = {
+        k
+        for n in broken + kept
+        for k, v in week.raw[n].items()
+        if v and not _is_noise_key(k)
+    }
+
+    rows: list[dict[str, Any]] = []
+    for key in keys:
+        in_broken = [n for n in broken if week.raw[n].get(key)]
+        if not in_broken:
+            continue
+        p_broken = len(in_broken) / len(broken)
+        p_kept = sum(1 for n in kept if week.raw[n].get(key)) / len(kept)
+        implied = sorted(
+            (week.rejected[n][1] - week.rejected[n][0]) / week.raw[n][key]
+            for n in in_broken
+        )
+        rows.append(
+            {
+                "key": key,
+                "in_failures": round(p_broken, 3),
+                "in_successes": round(p_kept, 3),
+                "lift": round(p_broken - p_kept, 3),
+                "implied": round(implied[len(implied) // 2], 3),
+                "mapped": key in SLEEPER_TO_NFLVERSE,
+            }
+        )
+    rows.sort(key=lambda r: -r["lift"])
+
+    # When the leading keys all sit near 100%/0% together they are not competing
+    # explanations — they co-occur, and the failures are a *subgroup* rather than
+    # a category. Six rows saying "every passing stat" is one finding: the
+    # quarterbacks. Saying so stops the next tool from trying to pick between
+    # columns that are perfectly confounded.
+    leaders = [r for r in rows if r["lift"] > 0.9]
+    if len(leaders) >= 3:
+        for row in leaders:
+            row["subgroup"] = True
+    return rows[:top]
+
+
+def propose_fixes(
+    week: SleeperWeek,
+    *,
+    tolerance: float = RECONSTRUCTION_TOLERANCE,
+    top: int = 6,
+    depth: int = 1,
+) -> list[dict[str, Any]]:
+    """Try concrete price changes and count how many players each one repairs.
+
+    The decisive tool, and the one that should have been written first. Rather
+    than inferring what a stat is worth — which correlated columns make
+    unreliable — it proposes a specific, plausible price for a specific key and
+    measures the only thing that matters: how many of the players we currently
+    cannot reproduce would reconstruct correctly if that were true.
+
+    Immune to collinearity by construction. Two correlated keys will both
+    appear to help, but only the one that repairs *every* failure repairs every
+    failure, and the count says so.
+
+    Candidate prices are the values real fantasy formats actually use, so the
+    search cannot return something like "interceptions are worth +2.04".
+    """
+    residuals: dict[str, float] = {
+        name: theirs - ours for name, (ours, theirs) in week.rejected.items()
+    }
+    standard = ScoringSettings.from_raw(_STANDARD_PPR_RAW, "standard-ppr")
+    for name, line in week.lines.items():
+        expected = week.ppr.get(name)
+        if expected is not None:
+            residuals[name] = expected - standard.score(to_espn_stat_line(line)).points
+    if not residuals:
+        return []
+
+    baseline = sum(1 for r in residuals.values() if abs(r) > tolerance)
+    if not baseline:
+        return []
+    # The residual is scored over the FAILING players only. Averaging across
+    # all 462 — of whom 427 already reconstruct perfectly — divides the signal
+    # by thirteen and collapses the gap between the true fix and a lucky one
+    # from 0.07 to 0.005.
+    failing_now = [n for n, r in residuals.items() if abs(r) > tolerance]
+
+    keys = {
+        k
+        for n in residuals
+        if n in week.raw
+        for k, v in week.raw[n].items()
+        if v and not _is_noise_key(k)
+    }
+
+    out: list[dict[str, Any]] = []
+    for key in keys:
+        current = _ASSUMED_PRICE.get(key, 0.0)
+        for price in _CANDIDATE_PRICES:
+            if price == current:
+                continue
+            delta = price - current
+            # Every scored category is linear in its own stat under standard
+            # PPR, so a price change shifts the residual by a known amount and
+            # nothing has to be re-scored.
+            left = [
+                abs(r - delta * (week.raw.get(n, {}).get(key) or 0.0))
+                for n, r in residuals.items()
+            ]
+            broken = sum(1 for x in left if x > tolerance)
+            on_failures = [
+                abs(residuals[n] - delta * (week.raw.get(n, {}).get(key) or 0.0))
+                for n in failing_now
+            ]
+            if broken < baseline:
+                out.append(
+                    {
+                        "key": key,
+                        "from": current,
+                        "to": price,
+                        "repairs": baseline - broken,
+                        "still_broken": broken,
+                        # The discriminator that counting repairs misses. Several
+                        # wrong prices can drag every player inside a half-point
+                        # tolerance; only the true one drives the error to zero.
+                        # On a planted bug the correct fix left 0.0000 and the
+                        # three impostors left 0.07 to 0.29.
+                        "residual_left": round(
+                            sum(on_failures) / len(on_failures), 4
+                        ),
+                        "where": "crosswalk" if key not in _ASSUMED_PRICE else "yardstick",
+                    }
+                )
+
+    out.sort(key=lambda r: (-r["repairs"], r["residual_left"], abs(r["to"])))
+    # One row per key — the best price for each — so six suggestions are six
+    # ideas rather than one idea at six prices.
+    seen: set[str] = set()
+    best: list[dict[str, Any]] = []
+    for row in out:
+        if row["key"] in seen:
+            continue
+        seen.add(row["key"])
+        best.append(row)
+        if len(best) >= top:
+            break
+
+    if depth < 2:
+        return best
+    return best + _propose_pairs(week, residuals, keys, tolerance, baseline, top)
+
+
+def _propose_pairs(
+    week: SleeperWeek,
+    residuals: dict[str, float],
+    keys: set[str],
+    tolerance: float,
+    baseline: int,
+    top: int,
+) -> list[dict[str, Any]]:
+    """Two simultaneous price changes, scored across every failing player.
+
+    A single knob can absorb a whole-subgroup effect, and on real data thirty
+    different pairs each reproduced one quarterback's gap exactly. One player is
+    one equation with a dozen unknowns; thirty-five players are thirty-five
+    equations, and a combination that satisfies all of them is not a
+    coincidence.
+
+    Pruned to keys that actually appear in the failures, and scored on the
+    failing players first — a pair that cannot fix them is not worth checking
+    against the ones that already work.
+    """
+    from itertools import combinations
+
+    failing = [n for n, r in residuals.items() if abs(r) > tolerance]
+    if not failing:
+        return []
+
+    live = sorted(
+        k for k in keys
+        if sum(1 for n in failing if week.raw.get(n, {}).get(k)) > len(failing) * 0.5
+    )
+    moves = [
+        (k, price, price - _ASSUMED_PRICE.get(k, 0.0))
+        for k in live
+        for price in _CANDIDATE_PRICES
+        if price != _ASSUMED_PRICE.get(k, 0.0)
+    ]
+
+    found: list[dict[str, Any]] = []
+    for (k1, p1, d1), (k2, p2, d2) in combinations(moves, 2):
+        if k1 == k2:
+            continue
+        broken_fail = sum(
+            1
+            for n in failing
+            if abs(
+                residuals[n]
+                - d1 * (week.raw.get(n, {}).get(k1) or 0.0)
+                - d2 * (week.raw.get(n, {}).get(k2) or 0.0)
+            )
+            > tolerance
+        )
+        if broken_fail:
+            continue  # must repair every failure before it is worth anything
+        left = [
+            abs(
+                r
+                - d1 * (week.raw.get(n, {}).get(k1) or 0.0)
+                - d2 * (week.raw.get(n, {}).get(k2) or 0.0)
+            )
+            for n, r in residuals.items()
+        ]
+        broken_all = sum(1 for x in left if x > tolerance)
+        on_failures = [
+            abs(
+                residuals[n]
+                - d1 * (week.raw.get(n, {}).get(k1) or 0.0)
+                - d2 * (week.raw.get(n, {}).get(k2) or 0.0)
+            )
+            for n in failing
+        ]
+        if broken_all < baseline:
+            found.append(
+                {
+                    "key": f"{k1} + {k2}",
+                    "from": f"{_ASSUMED_PRICE.get(k1, 0.0)}, {_ASSUMED_PRICE.get(k2, 0.0)}",
+                    "to": f"{p1}, {p2}",
+                    "repairs": baseline - broken_all,
+                    "still_broken": broken_all,
+                    "residual_left": round(sum(on_failures) / len(on_failures), 4),
+                    "where": "pair",
+                }
+            )
+    found.sort(key=lambda r: (r["residual_left"], -r["repairs"]))
+    return found[:top]
+
+
+def explain_player(week: SleeperWeek, name: str | None = None) -> dict[str, Any]:
+    """Every term in one player's reconstruction, beside Sleeper's own total.
+
+    The end of the road for inference. When the failures turn out to be an
+    entire position — every quarterback, say — the six passing stats are
+    perfectly confounded: every QB has all of them, so no statistical method
+    can say which is at fault. :func:`contrast_rejected` correctly identifies
+    the subgroup and correctly stops there; :func:`propose_fixes` will happily
+    absorb a whole-position effect into whichever single knob fits, which is
+    how it came to suggest an interception worth plus one and a half points.
+
+    What settles it is not another estimate. It is reading one row of
+    arithmetic: here is the stat line, here is what each category contributed
+    under our reference ruleset, here is the total, here is Sleeper's, here is
+    the difference, and here is every value we did not use.
+
+    ``name`` defaults to the worst offender.
+    """
+    if not week.rejected and name is None:
+        return {"error": "nothing was rejected — no reconstruction to explain"}
+
+    if name is None:
+        key = max(week.rejected, key=lambda n: abs(week.rejected[n][1] - week.rejected[n][0]))
+    else:
+        key = normalize_name(name)
+    stats = week.raw.get(key)
+    if stats is None:
+        return {"error": f"no stat line for {name or key!r}"}
+
+    standard = ScoringSettings.from_raw(_STANDARD_PPR_RAW, "standard-ppr")
+    line = {
+        col: stats[sleeper_key]
+        for sleeper_key, col in SLEEPER_TO_NFLVERSE.items()
+        if stats.get(sleeper_key)
+    }
+    scored = standard.score(to_espn_stat_line(line))
+    theirs = week.ppr.get(key)
+
+    used = []
+    for sleeper_key, column in sorted(SLEEPER_TO_NFLVERSE.items()):
+        value = stats.get(sleeper_key)
+        if not value:
+            continue
+        price = _ASSUMED_PRICE.get(sleeper_key, 0.0)
+        used.append(
+            {
+                "stat": sleeper_key,
+                "value": value,
+                "price": price,
+                "points": round(price * value, 3),
+                "column": column,
+            }
+        )
+
+    ignored = sorted(
+        ({"stat": k, "value": v} for k, v in stats.items() if v and not _is_noise_key(k)
+         and k not in SLEEPER_TO_NFLVERSE),
+        key=lambda r: -abs(r["value"]),
+    )
+
+    return {
+        "player": key,
+        "ours": scored.points,
+        "sleeper": theirs,
+        "gap": round((theirs - scored.points), 2) if theirs is not None else None,
+        "scored": used,
+        "components": scored.components,
+        "not_used": ignored,
+    }

@@ -94,6 +94,11 @@ Every player row carries several numbers and they mean different things.
   on a flex decision, that is real uncertainty and worth a sentence.
 - **`projection_basis: "espn"`** means Sleeper was unreachable and you are
   working from one source. Say so — the advice is still fine, just thinner.
+  It also reports coverage, e.g. `espn+sleeper (427/462)`.
+- **Quarterbacks currently have one source.** Sleeper's published total for a QB
+  cannot be rebuilt from the stat line it returns, so QBs fail the verification
+  and fall back to ESPN. Expect no `sleeper_proj` or `disagree` on a quarterback
+  row; that is by design, not an outage.
 
 ### What the numbers do not know
 

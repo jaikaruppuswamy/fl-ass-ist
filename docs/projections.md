@@ -91,6 +91,44 @@ tested) and from a laptop. It 403s only from this sandbox's datacenter address.
 An earlier draft of this note claimed datacenters generally were blocked — they
 are not.
 
+### Known limitation: quarterbacks get one source
+
+Sleeper's published `pts_ppr` for a quarterback sits 3–4 points above what we
+can rebuild from the stat line it returns in the same response. Every QB, no
+other position — 35 of 462 in the Week 1 pull. Those players fail the
+reconstruction check and fall back to ESPN.
+
+That is the designed behaviour rather than a fault, and it cost twelve rounds of
+diagnosis to establish that it is also the end of the road:
+
+- **A regression over the returned stats** produced a fumble worth +1.1 points
+  and a 40-yard run worth minus half a point. Projected passing stats are one
+  latent "how much will he play" variable wearing six hats, so least squares
+  splits a real effect across whichever correlated columns it likes.
+- **Split-half stability did not catch that**, because collinearity bias is not
+  sampling noise — both halves make the same wrong attribution and agree.
+- **Contrasting failures against successes** worked, and gave the real finding:
+  every passing stat is present in 100% of failures and ~0% of successes. That
+  is not a category, it is a position. It also means the columns are perfectly
+  confounded inside the failing group and no statistic can go further.
+- **Searching every plausible price for every returned stat**, singly and in
+  pairs, scored by how close to zero each drives the error: nothing reaches
+  zero. The best fit is an interception worth *plus two points*, and it only
+  looks tidy because projected interceptions sit near 0.96 for every starter,
+  so 0.96 × 4 lands on the gap by arithmetic accident. Every other candidate
+  implies a price no format uses — 0.0564 a passing yard, 6.81 a passing
+  touchdown, 0.1643 a first down.
+- **Sleeper does not publish its default scoring values**; the support docs list
+  the categories with the numbers left blank.
+
+The likely explanation is terminal by construction: **the missing category is
+not in the payload.** Reconstructing a total from its components cannot close if
+a component is never returned, however the remaining columns are reweighted.
+
+Cost: about 0.07 bench points per lineup per week — a hundredth of a win a
+season. `check_external.py --sleeper --diagnose` re-tests the whole thing in
+seconds if Sleeper ever starts returning the missing field.
+
 ### New fields on every player row
 
 | field | meaning |
