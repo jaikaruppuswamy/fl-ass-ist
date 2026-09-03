@@ -453,3 +453,190 @@ def test_the_basis_reports_coverage_not_just_presence(league_env, monkeypatch):
     monkeypatch.setattr(tools, "_safe_sleeper", partial)
     out = tools.get_start_sit_slate(key, 3, settings=settings)
     assert out["projection_basis"] == "espn+sleeper (1/2)"
+
+
+# --- the lineup is already optimal ------------------------------------------
+
+
+def make_optimal_roster(starting_slots):
+    """The same shape as make_roster, but already set correctly.
+
+    The bug this guards against only shows itself here. With a mis-set roster
+    there is a genuine swap to report, so a wrong `changes` still looks
+    plausible; it is the already-optimal case where "start these two" is
+    unambiguously nonsense.
+    """
+    elig = {
+        "QB": ("QB",),
+        "RB": ("RB", "RB/WR", "RB/WR/TE"),
+        "WR": ("WR", "RB/WR", "WR/TE", "RB/WR/TE"),
+        "TE": ("TE", "WR/TE", "RB/WR/TE"),
+        "K": ("K",),
+        "D/ST": ("D/ST",),
+    }
+    lineup = []
+    for i, slot in enumerate(starting_slots):
+        pos = slot if slot in elig else ("RB" if "RB" in slot else "WR")
+        lineup.append(
+            FakePlayer(
+                name=f"Starter{i}-{pos}",
+                position=pos,
+                eligibleSlots=elig[pos],
+                slot_position=slot,
+                projected_points=10.0,
+                projected_breakdown={"receivingReceptions": 5, "receivingYards": 60}
+                if pos in ("WR", "TE", "RB")
+                else {},
+            )
+        )
+    # A scrub on the bench, so there is a bench to report but nothing to promote.
+    lineup.append(
+        FakePlayer(
+            name="BenchScrub-RB",
+            position="RB",
+            eligibleSlots=elig["RB"],
+            slot_position="BE",
+            projected_points=1.0,
+            projected_breakdown={"rushingYards": 10},
+        )
+    )
+    return lineup
+
+
+def test_a_player_already_starting_is_never_told_to_start(league_env, monkeypatch):
+    """Every one of these leagues has two RB slots and two WR slots.
+
+    Keying the current lineup by slot_position collapsed those pairs, dropping
+    two starters, and the set difference then reported the survivors as players
+    to start — naming people who were already in the lineup. The totals still
+    matched, because current_total sums the roster directly, which is precisely
+    why it survived a season of green tests. Assert on `changes`, not on the
+    totals, or this test cannot fail.
+    """
+    settings, key, slots = league_env
+    optimal = make_optimal_roster(slots)
+    fake = FakeLeague(
+        json.loads(
+            next(p for p in _dumps if p.stem.startswith(f"league_{key}")).read_text()
+        )["settings"],
+        optimal,
+        make_roster(slots),
+    )
+    monkeypatch.setattr(tools, "get_league", lambda *a, **k: fake)
+
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+
+    assert out["current_projected"] == out["optimal_projected"]
+    assert out["changes"] is None, (
+        f"lineup is already optimal but it recommends {out['changes']}"
+    )
+
+
+def test_a_swap_never_names_a_current_starter_as_someone_to_start(league_env):
+    """The contract, stated so it holds under any league's scoring rules.
+
+    `changes.start` is who to move IN, so nobody already in the lineup belongs
+    there; `changes.bench` is who to move OUT, so everyone in it must currently
+    be starting. Under the slot-collapse bug two real starters went missing
+    from the current set and reappeared on the `start` side. Asserting on
+    totals could not catch that — current_projected is summed from the roster
+    directly and stayed correct throughout.
+    """
+    settings, key, _ = league_env
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+
+    starting = {
+        r["name"] for r in out["optimal_lineup"] if r.get("name")
+    } | {p["name"] for p in out["bench"]}
+    assert starting, "fixture produced no players at all"
+
+    changes = out["changes"]
+    assert changes is not None, "the fixture roster is deliberately mis-set"
+
+    current_starters = {"BenchStud-RB"} ^ starting  # everyone except the benched stud
+    for name in changes["start"]:
+        assert name not in current_starters, (
+            f"{name} is already in the lineup but was listed under changes.start; "
+            f"got {changes}"
+        )
+    assert not set(changes["start"]) & set(changes["bench"])
+
+
+# --- team id resolution ------------------------------------------------------
+
+
+def test_a_stale_team_id_is_not_reported_as_an_unset_one(league_env, monkeypatch):
+    """The failure a league rebuild produces.
+
+    A commissioner who discards a league and recreates it gets fresh team ids,
+    so the id in .env stops matching. Telling someone that a line they can see
+    in their file is "not set" sends them to check the one thing that is fine.
+    """
+    settings, key, _ = league_env
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "leagues": (
+                LeagueConfig(key=key, league_id=115717708, team_id=7, label=key),
+            ),
+        }
+    )
+    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
+
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+
+    assert "not set" not in out["error"]
+    assert "matches no team" in out["error"]
+    assert "115717708" in out["error"]
+
+
+def test_the_error_lists_the_teams_so_the_fix_is_in_the_message(league_env, monkeypatch):
+    """Knowing the id is wrong is half an answer; the other half is which id
+    is right, and the server is already holding it."""
+    settings, key, _ = league_env
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "leagues": (LeagueConfig(key=key, league_id=115717708, team_id=7, label=key),),
+        }
+    )
+    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
+
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+    assert "Teams in this league:" in out["error"]
+    assert "99=Opponent" in out["error"]
+
+
+def test_an_unset_team_id_still_says_unset(league_env, monkeypatch):
+    """The other branch must not regress into the rebuild wording."""
+    settings, key, _ = league_env
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "leagues": (LeagueConfig(key=key, league_id=1, team_id=None, label=key),),
+        }
+    )
+    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
+
+    out = tools.get_start_sit_slate(key, 3, settings=settings)
+    assert "is not set" in out["error"]
+    assert "matches no team" not in out["error"]
+
+
+def test_list_leagues_does_not_go_quiet_on_a_stale_team_id(league_env, monkeypatch):
+    """It used to add a note only for an unset id, so a stale one produced a
+    league entry with no my_team and no explanation — a silent omission in the
+    first call every brief makes."""
+    settings, key, _ = league_env
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "leagues": (LeagueConfig(key=key, league_id=115717708, team_id=7, label=key),),
+        }
+    )
+    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
+
+    out = tools.list_leagues(settings=settings)
+    entry = out["leagues"][0]
+    assert "my_team" not in entry
+    assert "matches no team" in entry["note"]

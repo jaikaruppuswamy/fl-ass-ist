@@ -22,6 +22,22 @@ GREEN, RED, DIM, RESET = "\033[32m", "\033[31m", "\033[2m", "\033[0m"
 OK, BAD = f"{GREEN}✓{RESET}", f"{RED}✗{RESET}"
 
 
+def print_team_menu(lg, cfg) -> None:
+    """List the teams so the fix is on screen, not in the ESPN app."""
+    try:
+        pairs = sorted((t.team_id, t.team_name) for t in lg.teams)
+    except Exception as exc:  # noqa: BLE001
+        print(f"    {DIM}could not list teams: {type(exc).__name__}: {exc}{RESET}")
+        return
+    if not pairs:
+        print(f"    {DIM}this league reports no teams{RESET}")
+        return
+    var = f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID"
+    print(f"    {DIM}teams in this league — set {var} to the id of yours:{RESET}")
+    for tid, name in pairs:
+        print(f"      {tid:>3}  {name}")
+
+
 def main() -> int:
     try:
         settings = load_settings()
@@ -60,9 +76,23 @@ def main() -> int:
             if getattr(team, "ties", 0):
                 record += f"-{team.ties}"
             print(f"    your team: {team.team_name} ({record}) · {len(team.roster)} players")
-        elif cfg.team_id is not None:
-            failures += 1
-            print(f"    {RED}no team with team_id={cfg.team_id} in this league{RESET}")
+            print(
+                f"    {DIM}confirm that name is yours — a stale team id can collide with a"
+                f" real team and read a stranger's roster without erroring{RESET}"
+            )
+        else:
+            # Both branches print the roster of teams. Learning that your id is
+            # wrong is only half an answer; the other half is the number to put
+            # in its place, and this script is already holding it.
+            if cfg.team_id is None:
+                print(f"    {RED}FF_LEAGUE_{cfg.key.upper()}_TEAM_ID is not set{RESET}")
+            else:
+                failures += 1
+                print(
+                    f"    {RED}no team with team_id={cfg.team_id} in this league{RESET}"
+                    f" {DIM}(a recreated league hands out fresh team ids){RESET}"
+                )
+            print_team_menu(lg, cfg)
         print()
 
     if failures:

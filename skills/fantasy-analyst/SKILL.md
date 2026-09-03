@@ -14,18 +14,33 @@ scoring rules.
 
 | Key | Teams | Shape | Watch for |
 |---|---|---|---|
-| `gladiator` | 10 | 1QB / 1RB / 2 RB-WR / 1WR / 1TE / 1FLEX / K / DST, 7 bench | **Stepwise yardage** — see below |
-| `inai` | 10 | 1QB / 2RB / 2WR / 1TE / 1FLEX / K / DST, 5 bench | Standard PPR |
-| `naperville` | 12 | Same as inai, 3 IR slots | 12 teams: waivers are thinner, byes hurt more |
+| `gladiator` | ? | **unverified — league was rebuilt** | Read `list_leagues`, not this row |
+| `inai` | 12 | 1QB / 2RB / 2WR / 1TE / 1FLEX / K / DST, 5 bench, 2 IR | Standard PPR |
+| `naperville` | 12 | Same as inai, 3 IR slots | Standard PPR |
 
-All three are full PPR with 4-point passing touchdowns.
+`inai` and `naperville` are full PPR with 4-point passing touchdowns.
 
-**`gladiator` scores yardage in buckets** — a point per 10 rushing or receiving
-yards, per 20 passing — with no per-yard rule at all. That averages to the same
-rate as the others but behaves differently at the margin: rushing yards 61
-through 69 are worth *exactly nothing*. A back projected for 65 is worse there
-than his number suggests, and one sitting on 68 late is a single carry from a
-free point. Mention this only when it actually changes a call.
+**`gladiator` was discarded and recreated by its commissioner in 2026**, under a
+new league id. Its scoring and roster settings did not necessarily carry over,
+so everything this file used to assert about that league — the bucketed
+yardage below, ten teams, seven bench spots — is now a claim about a league
+that no longer exists. Until someone has re-read it, take `gladiator`'s shape
+from `list_leagues` and its scoring from the `scoring` block that call returns,
+and say plainly that you are reading it fresh rather than quoting a rule you
+cannot vouch for. Two of the three leagues are 12-team, so `inai` and
+`naperville` both have thin waivers and harsh byes.
+
+**Bucketed yardage, if `gladiator` still uses it.** The old league scored a
+point per 10 rushing or receiving yards and per 20 passing, with no per-yard
+rule at all. Check the `yardage` block in `list_leagues` before relying on
+this: a `granularity` above 1 means buckets are still in force, and a
+`granularity` of 1 means the rebuilt league scores per-yard like the other two.
+
+Where buckets do apply, they average to the same rate as per-yard scoring but
+behave differently at the margin: rushing yards 61 through 69 are worth
+*exactly nothing*. A back projected for 65 is worse there than his number
+suggests, and one sitting on 68 late is a single carry from a free point.
+Mention this only when it actually changes a call.
 
 ## House rules
 

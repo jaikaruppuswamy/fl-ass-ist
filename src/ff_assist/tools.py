@@ -70,6 +70,60 @@ def _no_roster_reason(league: Any, exc: Exception) -> str:
     return f"no roster available for week {week}: {type(exc).__name__}: {exc}"
 
 
+def _team_menu(league: Any) -> str:
+    """The teams actually in the league, so the fix is inside the error itself.
+
+    Without this you get told your id is wrong and are left to go find the
+    right one in the ESPN app — which is the slowest possible way to learn a
+    number the server was already holding.
+    """
+    try:
+        pairs = sorted((t.team_id, t.team_name) for t in league.teams)
+    except Exception:  # noqa: BLE001 — a broken league object must not mask the real error
+        return ""
+    if not pairs:
+        return " This league reports no teams at all."
+    listing = "; ".join(f"{tid}={name}" for tid, name in pairs)
+    return f" Teams in this league: {listing}."
+
+
+def _team_or_error(league: Any, cfg: LeagueConfig) -> tuple[Any, dict[str, Any] | None]:
+    """Resolve the configured team, or say precisely why we cannot.
+
+    Two failures used to print the same sentence, and they need different ones.
+    TEAM_ID unset is a setup step never done. TEAM_ID set but matching nothing
+    means the id is stale — which is exactly what a league rebuild looks like,
+    because a commissioner who discards a league and recreates it gets fresh
+    team ids in the new one. Telling someone that a line they can see in their
+    .env is "not set" sends them to stare at the one thing that isn't wrong.
+
+    Worth naming the case this canNOT catch: team ids are small integers, so a
+    stale id often collides with a real team in the new league. Then everything
+    resolves and the advice is about a stranger's roster. The only defence is
+    the team *name*, which list_leagues reports — check it after any league
+    change.
+    """
+    var = f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID"
+    if cfg.team_id is None:
+        return None, {
+            "league": cfg.key,
+            "error": f"{var} is not set — add it so the server knows which team is yours."
+            + _team_menu(league),
+        }
+    team = my_team(league, cfg)
+    if team is None:
+        return None, {
+            "league": cfg.key,
+            "error": (
+                f"{var}={cfg.team_id} matches no team in league {cfg.league_id}. "
+                f"A recreated league hands out fresh team ids, so this is what a "
+                f"league rebuild looks like — the league id was updated and the "
+                f"team id was not." + _team_menu(league)
+            ),
+        }
+    return team, None
+
+
 def _cache(settings: Settings) -> Cache:
     return Cache(settings.cache_dir / "espn.sqlite")
 
@@ -219,8 +273,12 @@ def list_leagues(settings: Settings | None = None) -> dict[str, Any]:
                     "record": f"{team.wins}-{team.losses}",
                     "roster_size": len(team.roster),
                 }
-            elif cfg.team_id is None:
-                entry["note"] = f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"
+            else:
+                # Previously only the unset case produced a note, so a stale
+                # team id showed up as a league with no my_team key at all —
+                # a silent omission in the one response every brief opens with.
+                _, problem = _team_or_error(lg, cfg)
+                entry["note"] = problem["error"] if problem else "team not resolved"
         except ESPNError as exc:
             entry["error"] = str(exc).splitlines()[0]
         out.append(entry)
@@ -250,8 +308,9 @@ def get_matchup(
     raw = lg.espn_request.get_league().get("settings", {})
     scoring = ScoringSettings.from_raw(raw, cfg.key)
 
-    if cfg.team_id is None:
-        return {"league": cfg.key, "error": f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"}
+    _team, problem = _team_or_error(lg, cfg)
+    if problem is not None:
+        return problem
 
     try:
         boxes = lg.box_scores(week=week)
@@ -325,8 +384,9 @@ def get_start_sit_slate(
     scoring = ScoringSettings.from_raw(raw, cfg.key)
     lineup_slots = LineupSlots.from_raw(raw.get("rosterSettings", {}))
 
-    if cfg.team_id is None:
-        return {"league": cfg.key, "error": f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"}
+    _team, problem = _team_or_error(lg, cfg)
+    if problem is not None:
+        return problem
 
     try:
         boxes = lg.box_scores(week=week)
@@ -354,18 +414,22 @@ def get_start_sit_slate(
     slots = lineup_slots.starting_slots
     optimal = optimize_lineup(slots, available, projection)
 
-    current = {
-        getattr(p, "slot_position", ""): p
-        for p in roster
-        if getattr(p, "slot_position", "") not in ("BE", "IR")
-    }
+    # A LIST, not a dict keyed by slot_position. Every one of these leagues has
+    # two RB slots and two WR slots, so a slot-keyed dict silently collapses
+    # nine starters into seven — and the two it drops come back out of the set
+    # difference below as "start these", naming players who are already
+    # starting. The totals still agreed, because current_total is summed from
+    # `roster` directly, which is exactly why it survived a season of tests.
+    current = [
+        p for p in roster if getattr(p, "slot_position", "") not in ("BE", "IR")
+    ]
     current_total = round(
         sum(projection(p) for p in roster if getattr(p, "slot_position", "") not in ("BE", "IR")), 2
     )
     optimal_total = round(sum(projection(p) for p in optimal if p is not None), 2)
 
     optimal_names = {p.name for p in optimal if p is not None}
-    current_names = {p.name for p in current.values()}
+    current_names = {p.name for p in current}
     # Named from the reader's point of view: `start` is what to move in,
     # `bench` is what to move out. Getting these backwards in the response
     # would be worse than returning nothing at all.
@@ -750,11 +814,13 @@ def get_ros_schedule_strength(
     except ESPNError as exc:
         return {"league": cfg.key, "error": str(exc).splitlines()[0]}
 
-    if cfg.team_id is None:
-        return {"league": cfg.key, "error": f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"}
+    team, problem = _team_or_error(lg, cfg)
+    if problem is not None:
+        return problem
 
-    team = my_team(lg, cfg)
-    if team is None or not getattr(team, "roster", None):
+    # Reaching here means the team resolved, so an empty roster really is an
+    # undrafted league — it is no longer standing in for "your team id is stale".
+    if not getattr(team, "roster", None):
         return {
             "league": cfg.key,
             "error": "roster is empty — nothing to schedule until the draft",

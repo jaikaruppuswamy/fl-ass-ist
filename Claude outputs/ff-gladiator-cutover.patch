@@ -1,0 +1,507 @@
+From 1140359c8692e068d8d60a7666302d58e7d0dc45 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 00:31:52 +0000
+Subject: [PATCH] Fix slot collapse in start/sit, and diagnose a stale team id
+ properly
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three changes, all provoked by gladiator being discarded and rebuilt under
+league id 115717708.
+
+1. get_start_sit_slate built the current lineup as a dict keyed by
+   slot_position. Every one of these leagues has two RB slots and two WR
+   slots, so nine starters collapsed into seven, and the two that were
+   dropped came back out of the set difference as "start these" — naming
+   players already in the lineup. current_projected is summed from the
+   roster directly, so the totals stayed correct and the bug survived a
+   season of green tests. The tests added here assert on `changes`, and
+   fail against the old code.
+
+2. A team id that matches no team in the league reported "TEAM_ID not set
+   in .env", sending you to check the one line that was fine. That is
+   exactly what a league rebuild produces, since a recreated league hands
+   out fresh team ids. The two states now say different things, and the
+   error lists the league's teams so the replacement id is in the message.
+   list_leagues previously noted only the unset case, so a stale id showed
+   up as a league entry with no my_team key and no explanation.
+
+   Worth stating what this cannot catch: team ids are small integers, so a
+   stale id often collides with a real team in the new league. Then nothing
+   errors and the advice describes a stranger's roster. The only defence is
+   the team name, which list_leagues reports.
+
+3. verify_leagues.py prints the teams and their ids whenever the configured
+   team cannot be resolved, and prompts a name check when it can.
+
+The skill's gladiator row is marked unverified rather than guessed at: the
+rebuilt league's scoring did not necessarily carry over, so the bucketed
+yardage rule is now a claim about a league that no longer exists. inai
+corrected from 10 teams to 12.
+
+No league id lives in this repo — they come from .env locally and fly
+secrets in production, so the cutover itself is configuration, not code.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BGFeJkWEhRC96Snk2TB8uQ
+---
+ scripts/verify_leagues.py       |  36 +++++-
+ skills/fantasy-analyst/SKILL.md |  39 +++++--
+ src/ff_assist/tools.py          |  98 ++++++++++++++---
+ tests/test_tools.py             | 187 ++++++++++++++++++++++++++++++++
+ 4 files changed, 329 insertions(+), 31 deletions(-)
+
+diff --git a/scripts/verify_leagues.py b/scripts/verify_leagues.py
+index 8ed3855..9a458b0 100755
+--- a/scripts/verify_leagues.py
++++ b/scripts/verify_leagues.py
+@@ -22,6 +22,22 @@ GREEN, RED, DIM, RESET = "\033[32m", "\033[31m", "\033[2m", "\033[0m"
+ OK, BAD = f"{GREEN}✓{RESET}", f"{RED}✗{RESET}"
+ 
+ 
++def print_team_menu(lg, cfg) -> None:
++    """List the teams so the fix is on screen, not in the ESPN app."""
++    try:
++        pairs = sorted((t.team_id, t.team_name) for t in lg.teams)
++    except Exception as exc:  # noqa: BLE001
++        print(f"    {DIM}could not list teams: {type(exc).__name__}: {exc}{RESET}")
++        return
++    if not pairs:
++        print(f"    {DIM}this league reports no teams{RESET}")
++        return
++    var = f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID"
++    print(f"    {DIM}teams in this league — set {var} to the id of yours:{RESET}")
++    for tid, name in pairs:
++        print(f"      {tid:>3}  {name}")
++
++
+ def main() -> int:
+     try:
+         settings = load_settings()
+@@ -60,9 +76,23 @@ def main() -> int:
+             if getattr(team, "ties", 0):
+                 record += f"-{team.ties}"
+             print(f"    your team: {team.team_name} ({record}) · {len(team.roster)} players")
+-        elif cfg.team_id is not None:
+-            failures += 1
+-            print(f"    {RED}no team with team_id={cfg.team_id} in this league{RESET}")
++            print(
++                f"    {DIM}confirm that name is yours — a stale team id can collide with a"
++                f" real team and read a stranger's roster without erroring{RESET}"
++            )
++        else:
++            # Both branches print the roster of teams. Learning that your id is
++            # wrong is only half an answer; the other half is the number to put
++            # in its place, and this script is already holding it.
++            if cfg.team_id is None:
++                print(f"    {RED}FF_LEAGUE_{cfg.key.upper()}_TEAM_ID is not set{RESET}")
++            else:
++                failures += 1
++                print(
++                    f"    {RED}no team with team_id={cfg.team_id} in this league{RESET}"
++                    f" {DIM}(a recreated league hands out fresh team ids){RESET}"
++                )
++            print_team_menu(lg, cfg)
+         print()
+ 
+     if failures:
+diff --git a/skills/fantasy-analyst/SKILL.md b/skills/fantasy-analyst/SKILL.md
+index 9900717..9d20715 100644
+--- a/skills/fantasy-analyst/SKILL.md
++++ b/skills/fantasy-analyst/SKILL.md
+@@ -14,18 +14,33 @@ scoring rules.
+ 
+ | Key | Teams | Shape | Watch for |
+ |---|---|---|---|
+-| `gladiator` | 10 | 1QB / 1RB / 2 RB-WR / 1WR / 1TE / 1FLEX / K / DST, 7 bench | **Stepwise yardage** — see below |
+-| `inai` | 10 | 1QB / 2RB / 2WR / 1TE / 1FLEX / K / DST, 5 bench | Standard PPR |
+-| `naperville` | 12 | Same as inai, 3 IR slots | 12 teams: waivers are thinner, byes hurt more |
+-
+-All three are full PPR with 4-point passing touchdowns.
+-
+-**`gladiator` scores yardage in buckets** — a point per 10 rushing or receiving
+-yards, per 20 passing — with no per-yard rule at all. That averages to the same
+-rate as the others but behaves differently at the margin: rushing yards 61
+-through 69 are worth *exactly nothing*. A back projected for 65 is worse there
+-than his number suggests, and one sitting on 68 late is a single carry from a
+-free point. Mention this only when it actually changes a call.
++| `gladiator` | ? | **unverified — league was rebuilt** | Read `list_leagues`, not this row |
++| `inai` | 12 | 1QB / 2RB / 2WR / 1TE / 1FLEX / K / DST, 5 bench, 2 IR | Standard PPR |
++| `naperville` | 12 | Same as inai, 3 IR slots | Standard PPR |
++
++`inai` and `naperville` are full PPR with 4-point passing touchdowns.
++
++**`gladiator` was discarded and recreated by its commissioner in 2026**, under a
++new league id. Its scoring and roster settings did not necessarily carry over,
++so everything this file used to assert about that league — the bucketed
++yardage below, ten teams, seven bench spots — is now a claim about a league
++that no longer exists. Until someone has re-read it, take `gladiator`'s shape
++from `list_leagues` and its scoring from the `scoring` block that call returns,
++and say plainly that you are reading it fresh rather than quoting a rule you
++cannot vouch for. Two of the three leagues are 12-team, so `inai` and
++`naperville` both have thin waivers and harsh byes.
++
++**Bucketed yardage, if `gladiator` still uses it.** The old league scored a
++point per 10 rushing or receiving yards and per 20 passing, with no per-yard
++rule at all. Check the `yardage` block in `list_leagues` before relying on
++this: a `granularity` above 1 means buckets are still in force, and a
++`granularity` of 1 means the rebuilt league scores per-yard like the other two.
++
++Where buckets do apply, they average to the same rate as per-yard scoring but
++behave differently at the margin: rushing yards 61 through 69 are worth
++*exactly nothing*. A back projected for 65 is worse there than his number
++suggests, and one sitting on 68 late is a single carry from a free point.
++Mention this only when it actually changes a call.
+ 
+ ## House rules
+ 
+diff --git a/src/ff_assist/tools.py b/src/ff_assist/tools.py
+index 50e0017..155cb94 100644
+--- a/src/ff_assist/tools.py
++++ b/src/ff_assist/tools.py
+@@ -70,6 +70,60 @@ def _no_roster_reason(league: Any, exc: Exception) -> str:
+     return f"no roster available for week {week}: {type(exc).__name__}: {exc}"
+ 
+ 
++def _team_menu(league: Any) -> str:
++    """The teams actually in the league, so the fix is inside the error itself.
++
++    Without this you get told your id is wrong and are left to go find the
++    right one in the ESPN app — which is the slowest possible way to learn a
++    number the server was already holding.
++    """
++    try:
++        pairs = sorted((t.team_id, t.team_name) for t in league.teams)
++    except Exception:  # noqa: BLE001 — a broken league object must not mask the real error
++        return ""
++    if not pairs:
++        return " This league reports no teams at all."
++    listing = "; ".join(f"{tid}={name}" for tid, name in pairs)
++    return f" Teams in this league: {listing}."
++
++
++def _team_or_error(league: Any, cfg: LeagueConfig) -> tuple[Any, dict[str, Any] | None]:
++    """Resolve the configured team, or say precisely why we cannot.
++
++    Two failures used to print the same sentence, and they need different ones.
++    TEAM_ID unset is a setup step never done. TEAM_ID set but matching nothing
++    means the id is stale — which is exactly what a league rebuild looks like,
++    because a commissioner who discards a league and recreates it gets fresh
++    team ids in the new one. Telling someone that a line they can see in their
++    .env is "not set" sends them to stare at the one thing that isn't wrong.
++
++    Worth naming the case this canNOT catch: team ids are small integers, so a
++    stale id often collides with a real team in the new league. Then everything
++    resolves and the advice is about a stranger's roster. The only defence is
++    the team *name*, which list_leagues reports — check it after any league
++    change.
++    """
++    var = f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID"
++    if cfg.team_id is None:
++        return None, {
++            "league": cfg.key,
++            "error": f"{var} is not set — add it so the server knows which team is yours."
++            + _team_menu(league),
++        }
++    team = my_team(league, cfg)
++    if team is None:
++        return None, {
++            "league": cfg.key,
++            "error": (
++                f"{var}={cfg.team_id} matches no team in league {cfg.league_id}. "
++                f"A recreated league hands out fresh team ids, so this is what a "
++                f"league rebuild looks like — the league id was updated and the "
++                f"team id was not." + _team_menu(league)
++            ),
++        }
++    return team, None
++
++
+ def _cache(settings: Settings) -> Cache:
+     return Cache(settings.cache_dir / "espn.sqlite")
+ 
+@@ -219,8 +273,12 @@ def list_leagues(settings: Settings | None = None) -> dict[str, Any]:
+                     "record": f"{team.wins}-{team.losses}",
+                     "roster_size": len(team.roster),
+                 }
+-            elif cfg.team_id is None:
+-                entry["note"] = f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"
++            else:
++                # Previously only the unset case produced a note, so a stale
++                # team id showed up as a league with no my_team key at all —
++                # a silent omission in the one response every brief opens with.
++                _, problem = _team_or_error(lg, cfg)
++                entry["note"] = problem["error"] if problem else "team not resolved"
+         except ESPNError as exc:
+             entry["error"] = str(exc).splitlines()[0]
+         out.append(entry)
+@@ -250,8 +308,9 @@ def get_matchup(
+     raw = lg.espn_request.get_league().get("settings", {})
+     scoring = ScoringSettings.from_raw(raw, cfg.key)
+ 
+-    if cfg.team_id is None:
+-        return {"league": cfg.key, "error": f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"}
++    _team, problem = _team_or_error(lg, cfg)
++    if problem is not None:
++        return problem
+ 
+     try:
+         boxes = lg.box_scores(week=week)
+@@ -325,8 +384,9 @@ def get_start_sit_slate(
+     scoring = ScoringSettings.from_raw(raw, cfg.key)
+     lineup_slots = LineupSlots.from_raw(raw.get("rosterSettings", {}))
+ 
+-    if cfg.team_id is None:
+-        return {"league": cfg.key, "error": f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"}
++    _team, problem = _team_or_error(lg, cfg)
++    if problem is not None:
++        return problem
+ 
+     try:
+         boxes = lg.box_scores(week=week)
+@@ -354,18 +414,22 @@ def get_start_sit_slate(
+     slots = lineup_slots.starting_slots
+     optimal = optimize_lineup(slots, available, projection)
+ 
+-    current = {
+-        getattr(p, "slot_position", ""): p
+-        for p in roster
+-        if getattr(p, "slot_position", "") not in ("BE", "IR")
+-    }
++    # A LIST, not a dict keyed by slot_position. Every one of these leagues has
++    # two RB slots and two WR slots, so a slot-keyed dict silently collapses
++    # nine starters into seven — and the two it drops come back out of the set
++    # difference below as "start these", naming players who are already
++    # starting. The totals still agreed, because current_total is summed from
++    # `roster` directly, which is exactly why it survived a season of tests.
++    current = [
++        p for p in roster if getattr(p, "slot_position", "") not in ("BE", "IR")
++    ]
+     current_total = round(
+         sum(projection(p) for p in roster if getattr(p, "slot_position", "") not in ("BE", "IR")), 2
+     )
+     optimal_total = round(sum(projection(p) for p in optimal if p is not None), 2)
+ 
+     optimal_names = {p.name for p in optimal if p is not None}
+-    current_names = {p.name for p in current.values()}
++    current_names = {p.name for p in current}
+     # Named from the reader's point of view: `start` is what to move in,
+     # `bench` is what to move out. Getting these backwards in the response
+     # would be worse than returning nothing at all.
+@@ -750,11 +814,13 @@ def get_ros_schedule_strength(
+     except ESPNError as exc:
+         return {"league": cfg.key, "error": str(exc).splitlines()[0]}
+ 
+-    if cfg.team_id is None:
+-        return {"league": cfg.key, "error": f"FF_LEAGUE_{cfg.key.upper()}_TEAM_ID not set in .env"}
++    team, problem = _team_or_error(lg, cfg)
++    if problem is not None:
++        return problem
+ 
+-    team = my_team(lg, cfg)
+-    if team is None or not getattr(team, "roster", None):
++    # Reaching here means the team resolved, so an empty roster really is an
++    # undrafted league — it is no longer standing in for "your team id is stale".
++    if not getattr(team, "roster", None):
+         return {
+             "league": cfg.key,
+             "error": "roster is empty — nothing to schedule until the draft",
+diff --git a/tests/test_tools.py b/tests/test_tools.py
+index 18966b5..31b4195 100644
+--- a/tests/test_tools.py
++++ b/tests/test_tools.py
+@@ -453,3 +453,190 @@ def test_the_basis_reports_coverage_not_just_presence(league_env, monkeypatch):
+     monkeypatch.setattr(tools, "_safe_sleeper", partial)
+     out = tools.get_start_sit_slate(key, 3, settings=settings)
+     assert out["projection_basis"] == "espn+sleeper (1/2)"
++
++
++# --- the lineup is already optimal ------------------------------------------
++
++
++def make_optimal_roster(starting_slots):
++    """The same shape as make_roster, but already set correctly.
++
++    The bug this guards against only shows itself here. With a mis-set roster
++    there is a genuine swap to report, so a wrong `changes` still looks
++    plausible; it is the already-optimal case where "start these two" is
++    unambiguously nonsense.
++    """
++    elig = {
++        "QB": ("QB",),
++        "RB": ("RB", "RB/WR", "RB/WR/TE"),
++        "WR": ("WR", "RB/WR", "WR/TE", "RB/WR/TE"),
++        "TE": ("TE", "WR/TE", "RB/WR/TE"),
++        "K": ("K",),
++        "D/ST": ("D/ST",),
++    }
++    lineup = []
++    for i, slot in enumerate(starting_slots):
++        pos = slot if slot in elig else ("RB" if "RB" in slot else "WR")
++        lineup.append(
++            FakePlayer(
++                name=f"Starter{i}-{pos}",
++                position=pos,
++                eligibleSlots=elig[pos],
++                slot_position=slot,
++                projected_points=10.0,
++                projected_breakdown={"receivingReceptions": 5, "receivingYards": 60}
++                if pos in ("WR", "TE", "RB")
++                else {},
++            )
++        )
++    # A scrub on the bench, so there is a bench to report but nothing to promote.
++    lineup.append(
++        FakePlayer(
++            name="BenchScrub-RB",
++            position="RB",
++            eligibleSlots=elig["RB"],
++            slot_position="BE",
++            projected_points=1.0,
++            projected_breakdown={"rushingYards": 10},
++        )
++    )
++    return lineup
++
++
++def test_a_player_already_starting_is_never_told_to_start(league_env, monkeypatch):
++    """Every one of these leagues has two RB slots and two WR slots.
++
++    Keying the current lineup by slot_position collapsed those pairs, dropping
++    two starters, and the set difference then reported the survivors as players
++    to start — naming people who were already in the lineup. The totals still
++    matched, because current_total sums the roster directly, which is precisely
++    why it survived a season of green tests. Assert on `changes`, not on the
++    totals, or this test cannot fail.
++    """
++    settings, key, slots = league_env
++    optimal = make_optimal_roster(slots)
++    fake = FakeLeague(
++        json.loads(
++            next(p for p in _dumps if p.stem.startswith(f"league_{key}")).read_text()
++        )["settings"],
++        optimal,
++        make_roster(slots),
++    )
++    monkeypatch.setattr(tools, "get_league", lambda *a, **k: fake)
++
++    out = tools.get_start_sit_slate(key, 3, settings=settings)
++
++    assert out["current_projected"] == out["optimal_projected"]
++    assert out["changes"] is None, (
++        f"lineup is already optimal but it recommends {out['changes']}"
++    )
++
++
++def test_a_swap_never_names_a_current_starter_as_someone_to_start(league_env):
++    """The contract, stated so it holds under any league's scoring rules.
++
++    `changes.start` is who to move IN, so nobody already in the lineup belongs
++    there; `changes.bench` is who to move OUT, so everyone in it must currently
++    be starting. Under the slot-collapse bug two real starters went missing
++    from the current set and reappeared on the `start` side. Asserting on
++    totals could not catch that — current_projected is summed from the roster
++    directly and stayed correct throughout.
++    """
++    settings, key, _ = league_env
++    out = tools.get_start_sit_slate(key, 3, settings=settings)
++
++    starting = {
++        r["name"] for r in out["optimal_lineup"] if r.get("name")
++    } | {p["name"] for p in out["bench"]}
++    assert starting, "fixture produced no players at all"
++
++    changes = out["changes"]
++    assert changes is not None, "the fixture roster is deliberately mis-set"
++
++    current_starters = {"BenchStud-RB"} ^ starting  # everyone except the benched stud
++    for name in changes["start"]:
++        assert name not in current_starters, (
++            f"{name} is already in the lineup but was listed under changes.start; "
++            f"got {changes}"
++        )
++    assert not set(changes["start"]) & set(changes["bench"])
++
++
++# --- team id resolution ------------------------------------------------------
++
++
++def test_a_stale_team_id_is_not_reported_as_an_unset_one(league_env, monkeypatch):
++    """The failure a league rebuild produces.
++
++    A commissioner who discards a league and recreates it gets fresh team ids,
++    so the id in .env stops matching. Telling someone that a line they can see
++    in their file is "not set" sends them to check the one thing that is fine.
++    """
++    settings, key, _ = league_env
++    settings = Settings(
++        **{
++            **settings.__dict__,
++            "leagues": (
++                LeagueConfig(key=key, league_id=115717708, team_id=7, label=key),
++            ),
++        }
++    )
++    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
++
++    out = tools.get_start_sit_slate(key, 3, settings=settings)
++
++    assert "not set" not in out["error"]
++    assert "matches no team" in out["error"]
++    assert "115717708" in out["error"]
++
++
++def test_the_error_lists_the_teams_so_the_fix_is_in_the_message(league_env, monkeypatch):
++    """Knowing the id is wrong is half an answer; the other half is which id
++    is right, and the server is already holding it."""
++    settings, key, _ = league_env
++    settings = Settings(
++        **{
++            **settings.__dict__,
++            "leagues": (LeagueConfig(key=key, league_id=115717708, team_id=7, label=key),),
++        }
++    )
++    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
++
++    out = tools.get_start_sit_slate(key, 3, settings=settings)
++    assert "Teams in this league:" in out["error"]
++    assert "99=Opponent" in out["error"]
++
++
++def test_an_unset_team_id_still_says_unset(league_env, monkeypatch):
++    """The other branch must not regress into the rebuild wording."""
++    settings, key, _ = league_env
++    settings = Settings(
++        **{
++            **settings.__dict__,
++            "leagues": (LeagueConfig(key=key, league_id=1, team_id=None, label=key),),
++        }
++    )
++    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
++
++    out = tools.get_start_sit_slate(key, 3, settings=settings)
++    assert "is not set" in out["error"]
++    assert "matches no team" not in out["error"]
++
++
++def test_list_leagues_does_not_go_quiet_on_a_stale_team_id(league_env, monkeypatch):
++    """It used to add a note only for an unset id, so a stale one produced a
++    league entry with no my_team and no explanation — a silent omission in the
++    first call every brief makes."""
++    settings, key, _ = league_env
++    settings = Settings(
++        **{
++            **settings.__dict__,
++            "leagues": (LeagueConfig(key=key, league_id=115717708, team_id=7, label=key),),
++        }
++    )
++    monkeypatch.setattr(tools, "my_team", lambda lg, cfg: None)
++
++    out = tools.list_leagues(settings=settings)
++    entry = out["leagues"][0]
++    assert "my_team" not in entry
++    assert "matches no team" in entry["note"]
+-- 
+2.43.0
+
