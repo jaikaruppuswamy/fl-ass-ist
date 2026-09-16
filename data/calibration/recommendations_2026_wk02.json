@@ -1,0 +1,892 @@
+{
+ "season": 2026,
+ "week": 2,
+ "frozen_at": "2026-09-16T00:54:07+00:00",
+ "leagues": {
+  "inai": {
+   "league": "inai",
+   "week": 2,
+   "scoring": "PPR",
+   "current_projected": 123.44,
+   "optimal_projected": 123.44,
+   "changes": null,
+   "optimal_lineup": [
+    {
+     "name": "Caleb Williams",
+     "pos": "QB",
+     "team": "CHI",
+     "opp": "MIN",
+     "espn_proj": 18.64,
+     "slot": "QB",
+     "my_scoring_proj": 18.64,
+     "proj": 18.64,
+     "proj_basis": "espn_only",
+     "implied_total": 27.0,
+     "spread": 5.5,
+     "dvp_pts_allowed": 19.48,
+     "dvp_rank": 11,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 10,
+      "snap_pct": 1.0,
+      "wopr": 0.0
+     },
+     "recommended": true
+    },
+    {
+     "name": "Kenneth Walker III",
+     "pos": "RB",
+     "team": "KC",
+     "opp": "IND",
+     "espn_proj": 18.23,
+     "slot": "RB",
+     "my_scoring_proj": 18.23,
+     "proj": 17.26,
+     "sleeper_proj": 16.29,
+     "implied_total": 26.5,
+     "spread": 6.5,
+     "dvp_pts_allowed": 40.1,
+     "dvp_rank": 3,
+     "usage": {
+      "target_share": 0.24,
+      "carries": 23,
+      "snap_pct": 0.68,
+      "wopr": 0.3495
+     },
+     "recommended": true
+    },
+    {
+     "name": "Kyren Williams",
+     "pos": "RB",
+     "team": "LAR",
+     "opp": "NYG",
+     "espn_proj": 14.02,
+     "slot": "RB",
+     "my_scoring_proj": 14.02,
+     "proj": 15.52,
+     "sleeper_proj": 17.01,
+     "implied_total": 27.25,
+     "spread": 7.0,
+     "indoors": true,
+     "dvp_pts_allowed": 25.6,
+     "dvp_rank": 12,
+     "usage": {
+      "target_share": 0.1111,
+      "carries": 11,
+      "snap_pct": 0.64,
+      "wopr": 0.1859
+     },
+     "recommended": true
+    },
+    {
+     "name": "Ja'Marr Chase",
+     "pos": "WR",
+     "team": "CIN",
+     "opp": "HOU",
+     "espn_proj": 19.21,
+     "slot": "WR",
+     "my_scoring_proj": 19.21,
+     "proj": 18.02,
+     "sleeper_proj": 16.83,
+     "implied_total": 22.0,
+     "spread": -2.5,
+     "dvp_pts_allowed": 42.5,
+     "dvp_rank": 6,
+     "usage": {
+      "target_share": 0.1176,
+      "carries": 0,
+      "snap_pct": 0.94,
+      "wopr": 0.2818
+     },
+     "recommended": true
+    },
+    {
+     "name": "Ladd McConkey",
+     "pos": "WR",
+     "team": "LAC",
+     "opp": "LV",
+     "espn_proj": 14.33,
+     "slot": "WR",
+     "my_scoring_proj": 20.83,
+     "proj_delta": 6.5,
+     "proj": 17.04,
+     "sleeper_proj": 13.25,
+     "disagree": -7.58,
+     "injury": "QUESTIONABLE",
+     "implied_total": 25.0,
+     "spread": 6.5,
+     "indoors": true,
+     "dvp_pts_allowed": 24.2,
+     "dvp_rank": 23,
+     "usage": {
+      "target_share": 0.2593,
+      "carries": 0,
+      "snap_pct": 0.49,
+      "wopr": 0.6376
+     },
+     "recommended": true
+    },
+    {
+     "name": "Tyler Warren",
+     "pos": "TE",
+     "team": "IND",
+     "opp": "KC",
+     "espn_proj": 11.76,
+     "slot": "TE",
+     "my_scoring_proj": 11.76,
+     "proj": 11.52,
+     "sleeper_proj": 11.28,
+     "implied_total": 20.0,
+     "spread": -6.5,
+     "dvp_pts_allowed": 17.3,
+     "dvp_rank": 9,
+     "usage": {
+      "target_share": 0.1724,
+      "carries": 0,
+      "snap_pct": 0.93,
+      "wopr": 0.3387
+     },
+     "recommended": true
+    },
+    {
+     "name": "Luther Burden III",
+     "pos": "WR",
+     "team": "CHI",
+     "opp": "MIN",
+     "espn_proj": 12.67,
+     "slot": "RB/WR/TE",
+     "my_scoring_proj": 12.67,
+     "proj": 12.13,
+     "sleeper_proj": 11.6,
+     "implied_total": 27.0,
+     "spread": 5.5,
+     "dvp_pts_allowed": 56.2,
+     "dvp_rank": 2,
+     "usage": {
+      "target_share": 0.1923,
+      "carries": 1,
+      "snap_pct": 0.73,
+      "wopr": 0.3675
+     },
+     "recommended": true
+    },
+    {
+     "name": "Jason Myers",
+     "pos": "K",
+     "team": "SEA",
+     "opp": "ARI",
+     "espn_proj": 9.43,
+     "slot": "K",
+     "my_scoring_proj": 9.43,
+     "proj": 9.43,
+     "proj_basis": "espn_only",
+     "implied_total": 22.0,
+     "spread": 3.5,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 0,
+      "snap_pct": 0.0,
+      "wopr": 0.0
+     },
+     "recommended": true
+    },
+    {
+     "name": "Raiders D/ST",
+     "pos": "D/ST",
+     "team": "LV",
+     "opp": "LAC",
+     "espn_proj": 3.88,
+     "slot": "D/ST",
+     "my_scoring_proj": 3.88,
+     "proj": 3.88,
+     "proj_basis": "espn_only",
+     "implied_total": 18.5,
+     "spread": -6.5,
+     "indoors": true,
+     "recommended": true
+    }
+   ],
+   "bench": [
+    {
+     "name": "DK Metcalf",
+     "pos": "WR",
+     "team": "PIT",
+     "opp": "NE",
+     "espn_proj": 11.51,
+     "my_scoring_proj": 11.51,
+     "proj": 11.78,
+     "sleeper_proj": 12.05,
+     "implied_total": 18.0,
+     "spread": -5.5,
+     "dvp_pts_allowed": 34.1,
+     "dvp_rank": 12,
+     "usage": {
+      "target_share": 0.2703,
+      "carries": 0,
+      "snap_pct": 0.96,
+      "wopr": 0.7563
+     }
+    },
+    {
+     "name": "Aaron Jones Sr.",
+     "pos": "RB",
+     "team": "MIN",
+     "opp": "CHI",
+     "espn_proj": 11.26,
+     "my_scoring_proj": 11.26,
+     "proj": 11.35,
+     "sleeper_proj": 11.44,
+     "implied_total": 21.5,
+     "spread": -5.5,
+     "dvp_pts_allowed": 33.7,
+     "dvp_rank": 8,
+     "usage": {
+      "target_share": 0.0435,
+      "carries": 12,
+      "snap_pct": 0.46,
+      "wopr": 0.0811
+     }
+    },
+    {
+     "name": "Mike Washington Jr.",
+     "pos": "RB",
+     "team": "LV",
+     "opp": "LAC",
+     "espn_proj": 3.5,
+     "my_scoring_proj": 3.5,
+     "proj": 3.65,
+     "sleeper_proj": 3.8,
+     "implied_total": 18.5,
+     "spread": -6.5,
+     "indoors": true,
+     "dvp_pts_allowed": 22.0,
+     "dvp_rank": 18,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 7,
+      "snap_pct": 0.19,
+      "wopr": 0.0
+     }
+    },
+    {
+     "name": "Vikings D/ST",
+     "pos": "D/ST",
+     "team": "MIN",
+     "opp": "CHI",
+     "espn_proj": 3.62,
+     "my_scoring_proj": 3.62,
+     "proj": 3.62,
+     "proj_basis": "espn_only",
+     "implied_total": 21.5,
+     "spread": -5.5
+    }
+   ],
+   "environment_available": true,
+   "projection_basis": "espn+sleeper (387/409)"
+  },
+  "naperville": {
+   "league": "naperville",
+   "week": 2,
+   "scoring": "PPR",
+   "current_projected": 117.06,
+   "optimal_projected": 119.73,
+   "changes": {
+    "start": [
+     "Alec Pierce"
+    ],
+    "bench": [
+     "DK Metcalf"
+    ],
+    "points_gained": 2.67
+   },
+   "optimal_lineup": [
+    {
+     "name": "Josh Allen",
+     "pos": "QB",
+     "team": "BUF",
+     "opp": "DET",
+     "espn_proj": 22.85,
+     "slot": "QB",
+     "my_scoring_proj": 22.85,
+     "proj": 22.12,
+     "sleeper_proj": 21.4,
+     "implied_total": 29.0,
+     "spread": 4.5,
+     "dvp_pts_allowed": 23.2,
+     "dvp_rank": 8,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 6,
+      "snap_pct": 1.0,
+      "wopr": 0.0
+     },
+     "recommended": true
+    },
+    {
+     "name": "James Cook III",
+     "pos": "RB",
+     "team": "BUF",
+     "opp": "DET",
+     "espn_proj": 16.5,
+     "slot": "RB",
+     "my_scoring_proj": 16.5,
+     "proj": 16.76,
+     "sleeper_proj": 17.02,
+     "implied_total": 29.0,
+     "spread": 4.5,
+     "dvp_pts_allowed": 25.0,
+     "dvp_rank": 13,
+     "usage": {
+      "target_share": 0.1429,
+      "carries": 13,
+      "snap_pct": 0.72,
+      "wopr": 0.207
+     },
+     "recommended": true
+    },
+    {
+     "name": "David Montgomery",
+     "pos": "RB",
+     "team": "HOU",
+     "opp": "CIN",
+     "espn_proj": 14.09,
+     "slot": "RB",
+     "my_scoring_proj": 14.09,
+     "proj": 15.51,
+     "sleeper_proj": 16.92,
+     "implied_total": 24.5,
+     "spread": 2.5,
+     "dvp_pts_allowed": 23.1,
+     "dvp_rank": 16,
+     "usage": {
+      "target_share": 0.0811,
+      "carries": 20,
+      "snap_pct": 0.49,
+      "wopr": 0.1325
+     },
+     "recommended": true
+    },
+    {
+     "name": "Alec Pierce",
+     "pos": "WR",
+     "team": "IND",
+     "opp": "KC",
+     "espn_proj": 11.37,
+     "slot": "WR",
+     "my_scoring_proj": 17.23,
+     "proj_delta": 5.86,
+     "proj": 14.38,
+     "sleeper_proj": 11.53,
+     "disagree": -5.7,
+     "injury": "QUESTIONABLE",
+     "implied_total": 20.0,
+     "spread": -6.5,
+     "dvp_pts_allowed": 13.0,
+     "dvp_rank": 31,
+     "usage": {
+      "target_share": 0.2069,
+      "carries": 0,
+      "snap_pct": 0.59,
+      "wopr": 0.6691
+     },
+     "recommended": true
+    },
+    {
+     "name": "Tee Higgins",
+     "pos": "WR",
+     "team": "CIN",
+     "opp": "HOU",
+     "espn_proj": 12.2,
+     "slot": "WR",
+     "my_scoring_proj": 12.2,
+     "proj": 13.02,
+     "sleeper_proj": 13.84,
+     "implied_total": 22.0,
+     "spread": -2.5,
+     "dvp_pts_allowed": 41.5,
+     "dvp_rank": 6,
+     "usage": {
+      "target_share": 0.1765,
+      "carries": 0,
+      "snap_pct": 0.72,
+      "wopr": 0.6271
+     },
+     "recommended": true
+    },
+    {
+     "name": "Juwan Johnson",
+     "pos": "TE",
+     "team": "NO",
+     "opp": "BAL",
+     "espn_proj": 8.88,
+     "slot": "TE",
+     "my_scoring_proj": 8.88,
+     "proj": 9.38,
+     "sleeper_proj": 9.88,
+     "implied_total": 19.5,
+     "spread": -8.5,
+     "dvp_pts_allowed": 10.3,
+     "dvp_rank": 21,
+     "usage": {
+      "target_share": 0.1346,
+      "carries": 0,
+      "snap_pct": 0.84,
+      "wopr": 0.3135
+     },
+     "recommended": true
+    },
+    {
+     "name": "Jaylen Warren",
+     "pos": "RB",
+     "team": "PIT",
+     "opp": "NE",
+     "espn_proj": 11.35,
+     "slot": "RB/WR/TE",
+     "my_scoring_proj": 11.35,
+     "proj": 11.72,
+     "sleeper_proj": 12.09,
+     "implied_total": 18.0,
+     "spread": -5.5,
+     "dvp_pts_allowed": 15.0,
+     "dvp_rank": 23,
+     "usage": {
+      "target_share": 0.1622,
+      "carries": 10,
+      "snap_pct": 0.37,
+      "wopr": 0.2329
+     },
+     "recommended": true
+    },
+    {
+     "name": "Tyler Loop",
+     "pos": "K",
+     "team": "BAL",
+     "opp": "NO",
+     "espn_proj": 9.23,
+     "slot": "K",
+     "my_scoring_proj": 9.23,
+     "proj": 9.23,
+     "proj_basis": "espn_only",
+     "implied_total": 28.0,
+     "spread": 8.5,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 0,
+      "snap_pct": 0.0,
+      "wopr": 0.0
+     },
+     "recommended": true
+    },
+    {
+     "name": "Seahawks D/ST",
+     "pos": "D/ST",
+     "team": "SEA",
+     "opp": "ARI",
+     "espn_proj": 7.61,
+     "slot": "D/ST",
+     "my_scoring_proj": 7.61,
+     "proj": 7.61,
+     "proj_basis": "espn_only",
+     "implied_total": 22.0,
+     "spread": 3.5,
+     "recommended": true
+    }
+   ],
+   "bench": [
+    {
+     "name": "Jordan Love",
+     "pos": "QB",
+     "team": "GB",
+     "opp": "NYJ",
+     "espn_proj": 15.76,
+     "my_scoring_proj": 15.76,
+     "proj": 17.52,
+     "sleeper_proj": 19.28,
+     "disagree": 3.52,
+     "implied_total": 24.5,
+     "spread": 4.5,
+     "dvp_pts_allowed": 11.7,
+     "dvp_rank": 25,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 1,
+      "snap_pct": 1.0,
+      "wopr": 0.0
+     }
+    },
+    {
+     "name": "DK Metcalf",
+     "pos": "WR",
+     "team": "PIT",
+     "opp": "NE",
+     "espn_proj": 11.37,
+     "my_scoring_proj": 11.37,
+     "proj": 11.71,
+     "sleeper_proj": 12.05,
+     "implied_total": 18.0,
+     "spread": -5.5,
+     "dvp_pts_allowed": 33.1,
+     "dvp_rank": 12,
+     "usage": {
+      "target_share": 0.2703,
+      "carries": 0,
+      "snap_pct": 0.96,
+      "wopr": 0.7563
+     }
+    },
+    {
+     "name": "Brian Thomas Jr.",
+     "pos": "WR",
+     "team": "JAX",
+     "opp": "DEN",
+     "espn_proj": 9.25,
+     "my_scoring_proj": 14.01,
+     "proj_delta": 4.76,
+     "proj": 11.18,
+     "sleeper_proj": 8.34,
+     "disagree": -5.67,
+     "injury": "QUESTIONABLE",
+     "implied_total": 21.25,
+     "spread": -3.0,
+     "dvp_pts_allowed": 14.7,
+     "dvp_rank": 30,
+     "usage": {
+      "target_share": 0.1429,
+      "carries": 0,
+      "snap_pct": 0.35,
+      "wopr": 0.3416
+     }
+    },
+    {
+     "name": "Quentin Johnston",
+     "pos": "WR",
+     "team": "LAC",
+     "opp": "LV",
+     "espn_proj": 10.17,
+     "my_scoring_proj": 10.17,
+     "proj": 10.07,
+     "sleeper_proj": 9.97,
+     "implied_total": 25.0,
+     "spread": 6.5,
+     "indoors": true,
+     "dvp_pts_allowed": 24.2,
+     "dvp_rank": 23,
+     "usage": {
+      "target_share": 0.2222,
+      "carries": 0,
+      "snap_pct": 0.78,
+      "wopr": 0.4333
+     }
+    }
+   ],
+   "environment_available": true,
+   "projection_basis": "espn+sleeper (387/409)"
+  },
+  "gladiator": {
+   "league": "gladiator",
+   "week": 2,
+   "scoring": "PPR, stepwise yardage (per 10yd)",
+   "current_projected": 139.37,
+   "optimal_projected": 144.96,
+   "changes": {
+    "start": [
+     "Brock Bowers",
+     "Cowboys D/ST",
+     "D'Andre Swift",
+     "Patrick Mahomes"
+    ],
+    "bench": [
+     "Drake Maye",
+     "Jameson Williams",
+     "Juwan Johnson",
+     "Raiders D/ST"
+    ],
+    "points_gained": 5.59
+   },
+   "optimal_lineup": [
+    {
+     "name": "Patrick Mahomes",
+     "pos": "QB",
+     "team": "KC",
+     "opp": "IND",
+     "espn_proj": 32.19,
+     "slot": "QB",
+     "my_scoring_proj": 32.19,
+     "proj": 32.19,
+     "proj_basis": "espn_only",
+     "implied_total": 26.5,
+     "spread": 6.5,
+     "dvp_pts_allowed": 44.0,
+     "dvp_rank": 5,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 7,
+      "snap_pct": 1.0,
+      "wopr": 0.0
+     },
+     "recommended": true
+    },
+    {
+     "name": "Omarion Hampton",
+     "pos": "RB",
+     "team": "LAC",
+     "opp": "LV",
+     "espn_proj": 15.82,
+     "slot": "RB",
+     "my_scoring_proj": 15.82,
+     "proj": 14.38,
+     "sleeper_proj": 12.95,
+     "implied_total": 25.0,
+     "spread": 6.5,
+     "indoors": true,
+     "dvp_pts_allowed": 9.0,
+     "dvp_rank": 29,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 12,
+      "snap_pct": 0.58,
+      "wopr": 0.0
+     },
+     "recommended": true
+    },
+    {
+     "name": "D'Andre Swift",
+     "pos": "RB",
+     "team": "CHI",
+     "opp": "MIN",
+     "espn_proj": 13.59,
+     "slot": "RB",
+     "my_scoring_proj": 13.59,
+     "proj": 12.02,
+     "sleeper_proj": 10.44,
+     "disagree": -3.15,
+     "implied_total": 27.0,
+     "spread": 5.5,
+     "dvp_pts_allowed": 5.0,
+     "dvp_rank": 32,
+     "usage": {
+      "target_share": 0.0385,
+      "carries": 18,
+      "snap_pct": 0.57,
+      "wopr": 0.0665
+     },
+     "recommended": true
+    },
+    {
+     "name": "Ja'Marr Chase",
+     "pos": "WR",
+     "team": "CIN",
+     "opp": "HOU",
+     "espn_proj": 19.21,
+     "slot": "WR",
+     "my_scoring_proj": 19.21,
+     "proj": 17.89,
+     "sleeper_proj": 16.58,
+     "implied_total": 22.0,
+     "spread": -2.5,
+     "dvp_pts_allowed": 44.0,
+     "dvp_rank": 6,
+     "usage": {
+      "target_share": 0.1176,
+      "carries": 0,
+      "snap_pct": 0.94,
+      "wopr": 0.2818
+     },
+     "recommended": true
+    },
+    {
+     "name": "DeVonta Smith",
+     "pos": "WR",
+     "team": "PHI",
+     "opp": "TEN",
+     "espn_proj": 14.1,
+     "slot": "WR",
+     "my_scoring_proj": 14.1,
+     "proj": 14.48,
+     "sleeper_proj": 14.86,
+     "implied_total": 23.25,
+     "spread": 7.0,
+     "dvp_pts_allowed": 27.0,
+     "dvp_rank": 15,
+     "usage": {
+      "target_share": 0.2727,
+      "carries": 0,
+      "snap_pct": 0.95,
+      "wopr": 0.6549
+     },
+     "recommended": true
+    },
+    {
+     "name": "Brock Bowers",
+     "pos": "TE",
+     "team": "LV",
+     "opp": "LAC",
+     "espn_proj": 15.19,
+     "slot": "TE",
+     "my_scoring_proj": 15.19,
+     "proj": 13.99,
+     "sleeper_proj": 12.79,
+     "injury": "QUESTIONABLE",
+     "implied_total": 18.5,
+     "spread": -6.5,
+     "indoors": true,
+     "dvp_pts_allowed": 24.0,
+     "dvp_rank": 3,
+     "recommended": true
+    },
+    {
+     "name": "Rhamondre Stevenson",
+     "pos": "RB",
+     "team": "NE",
+     "opp": "PIT",
+     "espn_proj": 13.34,
+     "slot": "RB/WR/TE",
+     "my_scoring_proj": 13.34,
+     "proj": 11.96,
+     "sleeper_proj": 10.57,
+     "implied_total": 23.5,
+     "spread": 5.5,
+     "dvp_pts_allowed": 34.0,
+     "dvp_rank": 6,
+     "usage": {
+      "target_share": 0.1935,
+      "carries": 18,
+      "snap_pct": 0.85,
+      "wopr": 0.2713
+     },
+     "recommended": true
+    },
+    {
+     "name": "Cameron Dicker",
+     "pos": "K",
+     "team": "LAC",
+     "opp": "LV",
+     "espn_proj": 10.07,
+     "slot": "K",
+     "my_scoring_proj": 10.07,
+     "proj": 10.07,
+     "proj_basis": "espn_only",
+     "implied_total": 25.0,
+     "spread": 6.5,
+     "indoors": true,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 0,
+      "snap_pct": 0.0,
+      "wopr": 0.0
+     },
+     "recommended": true
+    },
+    {
+     "name": "Cowboys D/ST",
+     "pos": "D/ST",
+     "team": "DAL",
+     "opp": "WSH",
+     "espn_proj": 17.98,
+     "slot": "D/ST",
+     "my_scoring_proj": 17.98,
+     "proj": 17.98,
+     "proj_basis": "espn_only",
+     "implied_total": 27.5,
+     "spread": 4.5,
+     "recommended": true
+    }
+   ],
+   "bench": [
+    {
+     "name": "Drake Maye",
+     "pos": "QB",
+     "team": "NE",
+     "opp": "PIT",
+     "espn_proj": 32.01,
+     "my_scoring_proj": 32.01,
+     "proj": 32.01,
+     "proj_basis": "espn_only",
+     "implied_total": 23.5,
+     "spread": 5.5,
+     "dvp_pts_allowed": 14.0,
+     "dvp_rank": 30,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 7,
+      "snap_pct": 1.0,
+      "wopr": 0.0
+     }
+    },
+    {
+     "name": "Raiders D/ST",
+     "pos": "D/ST",
+     "team": "LV",
+     "opp": "LAC",
+     "espn_proj": 17.54,
+     "my_scoring_proj": 17.54,
+     "proj": 17.54,
+     "proj_basis": "espn_only",
+     "implied_total": 18.5,
+     "spread": -6.5,
+     "indoors": true
+    },
+    {
+     "name": "Jameson Williams",
+     "pos": "WR",
+     "team": "DET",
+     "opp": "BUF",
+     "espn_proj": 11.57,
+     "my_scoring_proj": 11.57,
+     "proj": 11.85,
+     "sleeper_proj": 12.13,
+     "implied_total": 24.5,
+     "spread": -4.5,
+     "dvp_pts_allowed": 38.0,
+     "dvp_rank": 9,
+     "usage": {
+      "target_share": 0.2308,
+      "carries": 0,
+      "snap_pct": 0.84,
+      "wopr": 0.7756
+     }
+    },
+    {
+     "name": "Juwan Johnson",
+     "pos": "TE",
+     "team": "NO",
+     "opp": "BAL",
+     "espn_proj": 9.07,
+     "my_scoring_proj": 9.07,
+     "proj": 9.19,
+     "sleeper_proj": 9.3,
+     "implied_total": 19.5,
+     "spread": -8.5,
+     "dvp_pts_allowed": 10.0,
+     "dvp_rank": 19,
+     "usage": {
+      "target_share": 0.1346,
+      "carries": 0,
+      "snap_pct": 0.84,
+      "wopr": 0.3135
+     }
+    },
+    {
+     "name": "Tyler Loop",
+     "pos": "K",
+     "team": "BAL",
+     "opp": "NO",
+     "espn_proj": 8.92,
+     "my_scoring_proj": 8.92,
+     "proj": 8.92,
+     "proj_basis": "espn_only",
+     "implied_total": 28.0,
+     "spread": 8.5,
+     "usage": {
+      "target_share": 0.0,
+      "carries": 0,
+      "snap_pct": 0.0,
+      "wopr": 0.0
+     }
+    }
+   ],
+   "environment_available": true,
+   "projection_basis": "espn+sleeper (387/409)"
+  }
+ }
+}
